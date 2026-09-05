@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
@@ -33,7 +34,7 @@ func TestMetricsHandlerUpdate(t *testing.T) {
 		{name: "invalid counter value", method: http.MethodPost, path: "/update/counter/PollCount/1.5", wantStatus: http.StatusBadRequest},
 		{name: "wrong method", method: http.MethodGet, path: "/update/gauge/Alloc/1", wantStatus: http.StatusMethodNotAllowed},
 		{name: "unknown endpoint", method: http.MethodPost, path: "/unknown/gauge/Alloc/1", wantStatus: http.StatusNotFound},
-		{name: "root", method: http.MethodPost, path: "/", wantStatus: http.StatusNotFound},
+		{name: "root", method: http.MethodPost, path: "/", wantStatus: http.StatusMethodNotAllowed},
 	}
 
 	for _, tt := range tests {
@@ -100,20 +101,60 @@ func TestMetricsHandlerResponseHeaders(t *testing.T) {
 	}
 }
 
-func TestSplitPath(t *testing.T) {
+func TestMetricsHandlerValue(t *testing.T) {
+	router, storage := newTestRouter()
+	storage.SetGauge("Alloc", 12.5)
+	storage.AddCounter("PollCount", 7)
+
 	tests := []struct {
-		path string
-		want int
+		name       string
+		path       string
+		wantStatus int
+		wantBody   string
 	}{
-		{path: "/", want: 0},
-		{path: "", want: 0},
-		{path: "/update/gauge/Alloc/1", want: 4},
-		{path: "/update/gauge/Alloc/1/", want: 4},
+		{name: "gauge", path: "/value/gauge/Alloc", wantStatus: http.StatusOK, wantBody: "12.5"},
+		{name: "counter", path: "/value/counter/PollCount", wantStatus: http.StatusOK, wantBody: "7"},
+		{name: "unknown metric", path: "/value/gauge/Nope", wantStatus: http.StatusNotFound},
+		{name: "unknown type", path: "/value/histogram/Alloc", wantStatus: http.StatusBadRequest},
+		{name: "without name", path: "/value/gauge", wantStatus: http.StatusNotFound},
 	}
 
 	for _, tt := range tests {
-		if got := len(splitPath(tt.path)); got != tt.want {
-			t.Errorf("splitPath(%q): got %d parts, want %d", tt.path, got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, http.NoBody))
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("got status %d, want %d", rec.Code, tt.wantStatus)
+			}
+
+			if tt.wantBody != "" && rec.Body.String() != tt.wantBody {
+				t.Errorf("got body %q, want %q", rec.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestMetricsHandlerIndex(t *testing.T) {
+	router, storage := newTestRouter()
+	storage.SetGauge("Alloc", 12.5)
+	storage.AddCounter("PollCount", 7)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("got Content-Type %q, want text/plain; charset=utf-8", got)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{"Alloc", "12.5", "PollCount", "7"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body does not contain %q", want)
 		}
 	}
 }

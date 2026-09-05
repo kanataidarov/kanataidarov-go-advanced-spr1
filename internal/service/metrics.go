@@ -12,6 +12,7 @@ var (
 	ErrEmptyName    = errors.New("metric name is not specified")
 	ErrUnknownType  = errors.New("unknown metric type")
 	ErrInvalidValue = errors.New("invalid metric value")
+	ErrNotFound     = errors.New("metric not found")
 )
 
 type MetricsService struct {
@@ -60,17 +61,17 @@ func (s *MetricsService) Value(mType, name string) (string, error) {
 	case models.Gauge:
 		value, ok := s.storage.Gauge(name)
 		if !ok {
-			return "", ErrEmptyName
+			return "", ErrNotFound
 		}
 
-		return strconv.FormatFloat(value, 'f', -1, 64), nil
+		return FormatGauge(value), nil
 	case models.Counter:
 		delta, ok := s.storage.Counter(name)
 		if !ok {
-			return "", ErrEmptyName
+			return "", ErrNotFound
 		}
 
-		return strconv.FormatInt(delta, 10), nil
+		return FormatCounter(delta), nil
 	default:
 		return "", ErrUnknownType
 	}
@@ -78,4 +79,12 @@ func (s *MetricsService) Value(mType, name string) (string, error) {
 
 func (s *MetricsService) All() []models.Metrics {
 	return s.storage.All()
+}
+
+func FormatGauge(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func FormatCounter(delta int64) string {
+	return strconv.FormatInt(delta, 10)
 }
