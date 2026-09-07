@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"bytes"
 	"errors"
+	"html/template"
+	"log"
 	"net/http"
 	"sort"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -18,6 +20,24 @@ type metricView struct {
 	Type  string
 	Value string
 }
+
+var indexTemplate = template.Must(template.New("index").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Metrics</title>
+</head>
+<body>
+<h1>Metrics</h1>
+<table>
+<thead><tr><th>Name</th><th>Type</th><th>Value</th></tr></thead>
+<tbody>
+{{range .}}<tr><td>{{.Name}}</td><td>{{.Type}}</td><td>{{.Value}}</td></tr>
+{{end}}</tbody>
+</table>
+</body>
+</html>
+`))
 
 type MetricsService interface {
 	Update(mType, name, rawValue string) error
@@ -104,18 +124,21 @@ func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
 
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 
-	var sb strings.Builder
+	var buf bytes.Buffer
 
-	for _, view := range views {
-		sb.WriteString(view.Name)
-		sb.WriteString("\t")
-		sb.WriteString(view.Type)
-		sb.WriteString("\t")
-		sb.WriteString(view.Value)
-		sb.WriteString("\n")
+	if err := indexTemplate.Execute(&buf, views); err != nil {
+		log.Printf("cannot render metrics page: %v", err)
+		http.Error(w, "cannot render metrics page", http.StatusInternalServerError)
+
+		return
 	}
 
-	writePlain(w, http.StatusOK, sb.String())
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return
+	}
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {

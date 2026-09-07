@@ -147,12 +147,12 @@ func TestMetricsHandlerIndex(t *testing.T) {
 		t.Fatalf("got status %d, want 200", rec.Code)
 	}
 
-	if got := rec.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
-		t.Errorf("got Content-Type %q, want text/plain; charset=utf-8", got)
+	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("got Content-Type %q, want text/html; charset=utf-8", got)
 	}
 
 	body := rec.Body.String()
-	for _, want := range []string{"Alloc", "12.5", "PollCount", "7"} {
+	for _, want := range []string{"<!DOCTYPE html>", "<html", "</html>", "Alloc", "12.5", "PollCount", "7"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body does not contain %q", want)
 		}

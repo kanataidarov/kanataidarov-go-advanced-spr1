@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
@@ -89,9 +90,32 @@ func TestHandlerIndexSortsMetricsByName(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	want := "Alpha\tcounter\t7\nZeta\tgauge\t2\n"
-	if rec.Body.String() != want {
-		t.Errorf("got body %q, want %q", rec.Body.String(), want)
+	body := rec.Body.String()
+
+	alpha := strings.Index(body, "Alpha")
+	zeta := strings.Index(body, "Zeta")
+
+	if alpha < 0 || zeta < 0 {
+		t.Fatalf("body does not list both metrics: %q", body)
+	}
+
+	if alpha > zeta {
+		t.Errorf("got Alpha after Zeta, want metrics sorted by name:\n%s", body)
+	}
+}
+
+func TestHandlerIndexEscapesMetricNames(t *testing.T) {
+	stub := &stubService{all: []models.Metrics{
+		{ID: "<script>alert(1)</script>", MType: models.Gauge, Value: ptrFloat(1)},
+	}}
+	router := NewMetricsHandler(stub).Router()
+
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "<script>") {
+		t.Errorf("metric name was not escaped:\n%s", rec.Body.String())
 	}
 }
 
