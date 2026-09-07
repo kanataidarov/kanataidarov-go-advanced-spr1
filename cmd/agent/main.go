@@ -19,7 +19,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log.Printf("metrics agent reports to %s every %s", cfg.Address, cfg.ReportInterval)
+	log.Printf("metrics agent reports to %s every %s", cfg.Sender.Address, cfg.Sender.ReportInterval)
 
 	agent.New(cfg).Run(ctx)
 }

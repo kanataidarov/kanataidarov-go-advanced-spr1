@@ -4,7 +4,9 @@ import (
 	"math/rand"
 	"runtime"
 	"sync"
+	"time"
 
+	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 )
 
@@ -14,13 +16,21 @@ const (
 )
 
 type Collector struct {
-	mu        sync.RWMutex
-	gauges    map[string]float64
-	pollCount int64
+	mu           sync.Mutex
+	gauges       map[string]float64
+	pollCount    int64
+	pollInterval time.Duration
 }
 
-func NewCollector() *Collector {
-	return &Collector{gauges: make(map[string]float64)}
+func NewCollector(cfg config.CollectorConfig) *Collector {
+	return &Collector{
+		gauges:       make(map[string]float64),
+		pollInterval: cfg.PollInterval,
+	}
+}
+
+func (c *Collector) PollInterval() time.Duration {
+	return c.pollInterval
 }
 
 func (c *Collector) Poll() {
@@ -64,8 +74,8 @@ func (c *Collector) Poll() {
 }
 
 func (c *Collector) Snapshot() []models.Metrics {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	snapshot := make([]models.Metrics, 0, len(c.gauges)+1)
 
@@ -78,4 +88,11 @@ func (c *Collector) Snapshot() []models.Metrics {
 	snapshot = append(snapshot, models.Metrics{ID: pollCountMetric, MType: models.Counter, Delta: &delta})
 
 	return snapshot
+}
+
+func (c *Collector) ResetPollCount(reported int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.pollCount -= reported
 }

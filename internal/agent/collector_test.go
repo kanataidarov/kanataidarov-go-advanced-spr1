@@ -2,7 +2,9 @@ package agent
 
 import (
 	"testing"
+	"time"
 
+	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 )
 
@@ -18,7 +20,7 @@ func snapshotMap(t *testing.T, metrics []models.Metrics) map[string]models.Metri
 }
 
 func TestCollectorPollFillsRuntimeGauges(t *testing.T) {
-	c := NewCollector()
+	c := NewCollector(config.CollectorConfig{PollInterval: time.Second})
 	c.Poll()
 
 	metrics := snapshotMap(t, c.Snapshot())
@@ -48,7 +50,7 @@ func TestCollectorPollFillsRuntimeGauges(t *testing.T) {
 }
 
 func TestCollectorPollCountIncrements(t *testing.T) {
-	c := NewCollector()
+	c := NewCollector(config.CollectorConfig{PollInterval: time.Second})
 
 	for i := int64(1); i <= 3; i++ {
 		c.Poll()
@@ -69,7 +71,7 @@ func TestCollectorPollCountIncrements(t *testing.T) {
 }
 
 func TestCollectorSnapshotIsIndependentCopy(t *testing.T) {
-	c := NewCollector()
+	c := NewCollector(config.CollectorConfig{PollInterval: time.Second})
 	c.Poll()
 
 	first := snapshotMap(t, c.Snapshot())["Alloc"]

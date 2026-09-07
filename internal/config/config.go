@@ -34,10 +34,18 @@ func ParseServerConfig(name string, args []string) (ServerConfig, error) {
 	return cfg, nil
 }
 
-type AgentConfig struct {
+type CollectorConfig struct {
+	PollInterval time.Duration
+}
+
+type SenderConfig struct {
 	Address        string
-	PollInterval   time.Duration
 	ReportInterval time.Duration
+}
+
+type AgentConfig struct {
+	Collector CollectorConfig
+	Sender    SenderConfig
 }
 
 func NewAgentConfig() (AgentConfig, error) {
@@ -46,15 +54,17 @@ func NewAgentConfig() (AgentConfig, error) {
 
 func ParseAgentConfig(name string, args []string) (AgentConfig, error) {
 	cfg := AgentConfig{
-		Address:        defaultServerAddress,
-		PollInterval:   defaultPollInterval,
-		ReportInterval: defaultReportInterval,
+		Collector: CollectorConfig{PollInterval: defaultPollInterval},
+		Sender: SenderConfig{
+			Address:        defaultServerAddress,
+			ReportInterval: defaultReportInterval,
+		},
 	}
 
 	fs := newFlagSet(name)
-	fs.StringVar(&cfg.Address, "a", cfg.Address, "address of the HTTP server endpoint")
-	reportInterval := fs.Int("r", seconds(cfg.ReportInterval), "metrics reporting interval, in seconds")
-	pollInterval := fs.Int("p", seconds(cfg.PollInterval), "runtime metrics polling interval, in seconds")
+	fs.StringVar(&cfg.Sender.Address, "a", cfg.Sender.Address, "address of the HTTP server endpoint")
+	reportInterval := fs.Int("r", seconds(cfg.Sender.ReportInterval), "metrics reporting interval, in seconds")
+	pollInterval := fs.Int("p", seconds(cfg.Collector.PollInterval), "runtime metrics polling interval, in seconds")
 
 	if err := parse(fs, args); err != nil {
 		return AgentConfig{}, err
@@ -68,8 +78,8 @@ func ParseAgentConfig(name string, args []string) (AgentConfig, error) {
 		return AgentConfig{}, fmt.Errorf("invalid flag -p=%d: poll interval must be positive", *pollInterval)
 	}
 
-	cfg.ReportInterval = time.Duration(*reportInterval) * time.Second
-	cfg.PollInterval = time.Duration(*pollInterval) * time.Second
+	cfg.Sender.ReportInterval = time.Duration(*reportInterval) * time.Second
+	cfg.Collector.PollInterval = time.Duration(*pollInterval) * time.Second
 
 	return cfg, nil
 }

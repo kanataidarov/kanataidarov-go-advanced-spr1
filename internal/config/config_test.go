@@ -43,16 +43,16 @@ func TestNewAgentConfigDefaults(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.Address != defaultServerAddress {
-		t.Errorf("got address %q, want %q", cfg.Address, defaultServerAddress)
+	if cfg.Sender.Address != defaultServerAddress {
+		t.Errorf("got address %q, want %q", cfg.Sender.Address, defaultServerAddress)
 	}
 
-	if cfg.PollInterval != 2*time.Second {
-		t.Errorf("got poll interval %s, want 2s", cfg.PollInterval)
+	if cfg.Collector.PollInterval != 2*time.Second {
+		t.Errorf("got poll interval %s, want 2s", cfg.Collector.PollInterval)
 	}
 
-	if cfg.ReportInterval != 10*time.Second {
-		t.Errorf("got report interval %s, want 10s", cfg.ReportInterval)
+	if cfg.Sender.ReportInterval != 10*time.Second {
+		t.Errorf("got report interval %s, want 10s", cfg.Sender.ReportInterval)
 	}
 }
 
@@ -62,16 +62,16 @@ func TestAgentConfigFlags(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.Address != "127.0.0.1:8081" {
-		t.Errorf("got address %q, want 127.0.0.1:8081", cfg.Address)
+	if cfg.Sender.Address != "127.0.0.1:8081" {
+		t.Errorf("got address %q, want 127.0.0.1:8081", cfg.Sender.Address)
 	}
 
-	if cfg.ReportInterval != 5*time.Second {
-		t.Errorf("got report interval %s, want 5s", cfg.ReportInterval)
+	if cfg.Sender.ReportInterval != 5*time.Second {
+		t.Errorf("got report interval %s, want 5s", cfg.Sender.ReportInterval)
 	}
 
-	if cfg.PollInterval != time.Second {
-		t.Errorf("got poll interval %s, want 1s", cfg.PollInterval)
+	if cfg.Collector.PollInterval != time.Second {
+		t.Errorf("got poll interval %s, want 1s", cfg.Collector.PollInterval)
 	}
 }
 

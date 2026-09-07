@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,13 @@ import (
 
 func ptrFloat(v float64) *float64 { return &v }
 func ptrInt(v int64) *int64       { return &v }
+
+func testAgentConfig(address string) config.AgentConfig {
+	return config.AgentConfig{
+		Collector: config.CollectorConfig{PollInterval: time.Second},
+		Sender:    config.SenderConfig{Address: address, ReportInterval: time.Second},
+	}
+}
 
 func TestNormalizeBaseURL(t *testing.T) {
 	tests := []struct {
@@ -98,11 +107,7 @@ func TestAgentReportSendsAllMetrics(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := New(config.AgentConfig{
-		Address:        srv.URL,
-		PollInterval:   time.Second,
-		ReportInterval: time.Second,
-	})
+	a := New(testAgentConfig(srv.URL))
 
 	a.collector.Poll()
 	a.Report(context.Background())
@@ -139,13 +144,69 @@ func TestAgentReportSendsAllMetrics(t *testing.T) {
 	}
 }
 
+func TestAgentReportSendsPollCountDelta(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		deltas []string
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/update/counter/PollCount/") {
+			mu.Lock()
+			deltas = append(deltas, path.Base(r.URL.Path))
+			mu.Unlock()
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := New(testAgentConfig(srv.URL))
+
+	// Три репорта по пять опросов каждый: сервер должен получить 5, 5, 5,
+	// а не нарастающие 5, 10, 15.
+	for range 3 {
+		for range 5 {
+			a.collector.Poll()
+		}
+
+		a.Report(context.Background())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	want := []string{"5", "5", "5"}
+	if !reflect.DeepEqual(deltas, want) {
+		t.Errorf("got PollCount deltas %v, want %v", deltas, want)
+	}
+}
+
+func TestAgentReportKeepsPollCountOnFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	a := New(testAgentConfig(srv.URL))
+
+	a.collector.Poll()
+	a.Report(context.Background())
+	a.collector.Poll()
+
+	metric := snapshotMap(t, a.collector.Snapshot())[pollCountMetric]
+	if metric.Delta == nil || *metric.Delta != 2 {
+		t.Errorf("got PollCount %v, want 2 (неудачный репорт не должен сбрасывать счётчик)", metric.Delta)
+	}
+}
+
 func TestAgentReportSurvivesServerErrors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
-	a := New(config.AgentConfig{Address: srv.URL, PollInterval: time.Second, ReportInterval: time.Second})
+	a := New(testAgentConfig(srv.URL))
 	a.collector.Poll()
 
 	a.Report(context.Background()) // не должно паниковать
@@ -158,9 +219,8 @@ func TestAgentRunStopsOnContextCancel(t *testing.T) {
 	defer srv.Close()
 
 	a := New(config.AgentConfig{
-		Address:        srv.URL,
-		PollInterval:   10 * time.Millisecond,
-		ReportInterval: 20 * time.Millisecond,
+		Collector: config.CollectorConfig{PollInterval: 10 * time.Millisecond},
+		Sender:    config.SenderConfig{Address: srv.URL, ReportInterval: 20 * time.Millisecond},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
