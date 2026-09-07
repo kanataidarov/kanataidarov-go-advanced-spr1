@@ -163,8 +163,6 @@ func TestAgentReportSendsPollCountDelta(t *testing.T) {
 
 	a := New(testAgentConfig(srv.URL))
 
-	// Три репорта по пять опросов каждый: сервер должен получить 5, 5, 5,
-	// а не нарастающие 5, 10, 15.
 	for range 3 {
 		for range 5 {
 			a.collector.Poll()

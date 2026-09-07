@@ -19,11 +19,17 @@ type metricView struct {
 	Value string
 }
 
-type MetricsHandler struct {
-	metrics *service.MetricsService
+type MetricsService interface {
+	Update(mType, name, rawValue string) error
+	Value(mType, name string) (string, error)
+	All() []models.Metrics
 }
 
-func NewMetricsHandler(metrics *service.MetricsService) *MetricsHandler {
+type MetricsHandler struct {
+	metrics MetricsService
+}
+
+func NewMetricsHandler(metrics MetricsService) *MetricsHandler {
 	return &MetricsHandler{metrics: metrics}
 }
 

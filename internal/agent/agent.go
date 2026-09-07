@@ -8,8 +8,6 @@ import (
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 )
 
-// Agent связывает сбор метрик и их отправку: каждый компонент получает
-// только свою часть конфигурации.
 type Agent struct {
 	collector *Collector
 	sender    *Sender
@@ -63,8 +61,6 @@ func (a *Agent) Report(ctx context.Context) {
 		}
 	}
 
-	// Счётчик сбрасываем только если все метрики ушли: иначе прирост
-	// останется в коллекторе и уедет следующим репортом.
 	if !failed && reportedPollCount > 0 {
 		a.collector.ResetPollCount(reportedPollCount)
 	}
