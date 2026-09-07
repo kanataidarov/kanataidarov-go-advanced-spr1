@@ -128,7 +128,7 @@ func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
 
 	if err := indexTemplate.Execute(&buf, views); err != nil {
 		log.Printf("cannot render metrics page: %v", err)
-		http.Error(w, "cannot render metrics page", http.StatusInternalServerError)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 
 		return
 	}
@@ -148,7 +148,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrUnknownType), errors.Is(err, service.ErrInvalidValue):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("internal error while handling metrics request: %v", err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
 }
 

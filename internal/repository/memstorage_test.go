@@ -66,5 +66,3 @@ func TestMemStorageAll(t *testing.T) {
 		t.Errorf("unexpected counter metric: %+v", m)
 	}
 }
-
-var _ Storage = (*MemStorage)(nil)

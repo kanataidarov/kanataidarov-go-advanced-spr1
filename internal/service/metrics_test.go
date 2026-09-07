@@ -39,7 +39,10 @@ func (m *mockStorage) Counter(name string) (int64, bool) {
 
 func (m *mockStorage) All() []models.Metrics { return nil }
 
-var _ repository.Storage = (*mockStorage)(nil)
+var (
+	_ Storage = (*mockStorage)(nil)
+	_ Storage = (*repository.MemStorage)(nil)
+)
 
 func TestMetricsServiceUpdate(t *testing.T) {
 	tests := []struct {

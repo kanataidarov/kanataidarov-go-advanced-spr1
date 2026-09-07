@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
-	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/repository"
 )
 
 var (
@@ -15,11 +14,19 @@ var (
 	ErrNotFound     = errors.New("metric not found")
 )
 
-type MetricsService struct {
-	storage repository.Storage
+type Storage interface {
+	SetGauge(name string, value float64)
+	AddCounter(name string, delta int64) int64
+	Gauge(name string) (float64, bool)
+	Counter(name string) (int64, bool)
+	All() []models.Metrics
 }
 
-func NewMetricsService(storage repository.Storage) *MetricsService {
+type MetricsService struct {
+	storage Storage
+}
+
+func NewMetricsService(storage Storage) *MetricsService {
 	return &MetricsService{storage: storage}
 }
 
