@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/repository"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/service"
@@ -13,7 +15,7 @@ import (
 
 func newTestRouter() (http.Handler, *repository.MemStorage) {
 	storage := repository.NewMemStorage()
-	h := NewMetricsHandler(service.NewMetricsService(storage))
+	h := NewMetricsHandler(service.NewMetricsService(storage), zap.NewNop())
 
 	return h.Router(), storage
 }

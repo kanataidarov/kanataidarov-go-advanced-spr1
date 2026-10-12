@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 )
@@ -107,7 +110,7 @@ func TestAgentReportSendsAllMetrics(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := New(testAgentConfig(srv.URL))
+	a := New(testAgentConfig(srv.URL), zap.NewNop())
 
 	a.collector.Poll()
 	a.Report(context.Background())
@@ -161,7 +164,7 @@ func TestAgentReportSendsPollCountDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := New(testAgentConfig(srv.URL))
+	a := New(testAgentConfig(srv.URL), zap.NewNop())
 
 	for range 3 {
 		for range 5 {
@@ -186,7 +189,7 @@ func TestAgentReportKeepsPollCountOnFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := New(testAgentConfig(srv.URL))
+	a := New(testAgentConfig(srv.URL), zap.NewNop())
 
 	a.collector.Poll()
 	a.Report(context.Background())
@@ -204,10 +207,26 @@ func TestAgentReportSurvivesServerErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a := New(testAgentConfig(srv.URL))
+	core, logs := observer.New(zap.InfoLevel)
+	a := New(testAgentConfig(srv.URL), zap.New(core))
 	a.collector.Poll()
 
-	a.Report(context.Background()) // не должно паниковать
+	a.Report(context.Background())
+
+	entries := logs.All()
+	if want := len(a.collector.Snapshot()); len(entries) != want {
+		t.Fatalf("got %d log entries, want one per failed metric (%d)", len(entries), want)
+	}
+
+	for _, e := range entries {
+		if e.Level != zap.ErrorLevel {
+			t.Errorf("got level %s, want error", e.Level)
+		}
+
+		if name, _ := e.ContextMap()["metric"].(string); name == "" {
+			t.Error("log entry must name the metric that was not reported")
+		}
+	}
 }
 
 func TestAgentRunStopsOnContextCancel(t *testing.T) {
@@ -219,7 +238,7 @@ func TestAgentRunStopsOnContextCancel(t *testing.T) {
 	a := New(config.AgentConfig{
 		Collector: config.CollectorConfig{PollInterval: 10 * time.Millisecond},
 		Sender:    config.SenderConfig{Address: srv.URL, ReportInterval: 20 * time.Millisecond},
-	})
+	}, zap.NewNop())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()

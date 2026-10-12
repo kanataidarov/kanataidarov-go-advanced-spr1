@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"html/template"
-	"log"
 	"net/http"
 	"sort"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/service"
@@ -47,10 +47,11 @@ type MetricsService interface {
 
 type MetricsHandler struct {
 	metrics MetricsService
+	log     *zap.Logger
 }
 
-func NewMetricsHandler(metrics MetricsService) *MetricsHandler {
-	return &MetricsHandler{metrics: metrics}
+func NewMetricsHandler(metrics MetricsService, log *zap.Logger) *MetricsHandler {
+	return &MetricsHandler{metrics: metrics, log: log}
 }
 
 func (h *MetricsHandler) Router() http.Handler {
@@ -82,7 +83,7 @@ func (h *MetricsHandler) update(w http.ResponseWriter, r *http.Request) {
 	value := chi.URLParam(r, "value")
 
 	if err := h.metrics.Update(mType, name, value); err != nil {
-		writeServiceError(w, err)
+		h.writeServiceError(w, err)
 
 		return
 	}
@@ -96,7 +97,7 @@ func (h *MetricsHandler) value(w http.ResponseWriter, r *http.Request) {
 
 	value, err := h.metrics.Value(mType, name)
 	if err != nil {
-		writeServiceError(w, err)
+		h.writeServiceError(w, err)
 
 		return
 	}
@@ -127,7 +128,7 @@ func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
 	var buf bytes.Buffer
 
 	if err := indexTemplate.Execute(&buf, views); err != nil {
-		log.Printf("cannot render metrics page: %v", err)
+		h.log.Error("cannot render metrics page", zap.Error(err))
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 
 		return
@@ -141,14 +142,14 @@ func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func writeServiceError(w http.ResponseWriter, err error) {
+func (h *MetricsHandler) writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrEmptyName), errors.Is(err, service.ErrNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, service.ErrUnknownType), errors.Is(err, service.ErrInvalidValue):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
-		log.Printf("internal error while handling metrics request: %v", err)
+		h.log.Error("internal error while handling metrics request", zap.Error(err))
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
 }

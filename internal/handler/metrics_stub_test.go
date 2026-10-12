@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/service"
 )
@@ -35,7 +38,7 @@ func (s *stubService) All() []models.Metrics {
 
 func TestHandlerPassesUpdateParamsToService(t *testing.T) {
 	stub := &stubService{}
-	router := NewMetricsHandler(stub).Router()
+	router := NewMetricsHandler(stub, zap.NewNop()).Router()
 
 	req := httptest.NewRequest(http.MethodPost, "/update/gauge/Alloc/12.5", http.NoBody)
 	rec := httptest.NewRecorder()
@@ -66,7 +69,7 @@ func TestHandlerMapsServiceErrorsToStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := NewMetricsHandler(&stubService{valueErr: tt.err}).Router()
+			router := NewMetricsHandler(&stubService{valueErr: tt.err}, zap.NewNop()).Router()
 
 			req := httptest.NewRequest(http.MethodGet, "/value/gauge/Alloc", http.NoBody)
 			rec := httptest.NewRecorder()
@@ -84,7 +87,7 @@ func TestHandlerIndexSortsMetricsByName(t *testing.T) {
 		{ID: "Zeta", MType: models.Gauge, Value: ptrFloat(2)},
 		{ID: "Alpha", MType: models.Counter, Delta: ptrInt(7)},
 	}}
-	router := NewMetricsHandler(stub).Router()
+	router := NewMetricsHandler(stub, zap.NewNop()).Router()
 
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rec := httptest.NewRecorder()
@@ -108,7 +111,7 @@ func TestHandlerIndexEscapesMetricNames(t *testing.T) {
 	stub := &stubService{all: []models.Metrics{
 		{ID: "<script>alert(1)</script>", MType: models.Gauge, Value: ptrFloat(1)},
 	}}
-	router := NewMetricsHandler(stub).Router()
+	router := NewMetricsHandler(stub, zap.NewNop()).Router()
 
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rec := httptest.NewRecorder()
@@ -121,3 +124,39 @@ func TestHandlerIndexEscapesMetricNames(t *testing.T) {
 
 func ptrFloat(v float64) *float64 { return &v }
 func ptrInt(v int64) *int64       { return &v }
+
+func TestHandlerLogsInternalErrors(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	h := NewMetricsHandler(&stubService{}, zap.New(core))
+
+	rec := httptest.NewRecorder()
+	h.writeServiceError(rec, errors.New("storage is broken"))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("got status %d, want 500", rec.Code)
+	}
+
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("got %d log entries, want 1", len(entries))
+	}
+
+	if entries[0].Level != zap.ErrorLevel {
+		t.Errorf("got level %s, want error", entries[0].Level)
+	}
+
+	if got := entries[0].ContextMap()["error"]; got != "storage is broken" {
+		t.Errorf("got error field %v, want %q", got, "storage is broken")
+	}
+}
+
+func TestHandlerDoesNotLogClientErrors(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	h := NewMetricsHandler(&stubService{}, zap.New(core))
+
+	h.writeServiceError(httptest.NewRecorder(), service.ErrNotFound)
+
+	if n := len(logs.All()); n != 0 {
+		t.Errorf("got %d log entries, want 0: client errors are logged by the request middleware", n)
+	}
+}
