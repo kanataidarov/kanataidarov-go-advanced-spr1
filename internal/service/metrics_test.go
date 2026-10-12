@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
@@ -140,5 +141,116 @@ func TestMetricsServiceAll(t *testing.T) {
 
 	if len(s.All()) != 1 {
 		t.Errorf("got %d metrics, want 1", len(s.All()))
+	}
+}
+
+func ptrFloat(v float64) *float64 { return &v }
+func ptrInt(v int64) *int64       { return &v }
+
+func TestMetricsServiceUpdateMetric(t *testing.T) {
+	tests := []struct {
+		name    string
+		metric  models.Metrics
+		want    models.Metrics
+		wantErr error
+	}{
+		{
+			name:   "gauge",
+			metric: models.Metrics{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(12.5)},
+			want:   models.Metrics{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(12.5)},
+		},
+		{
+			name:   "counter returns accumulated total",
+			metric: models.Metrics{ID: "PollCount", MType: models.Counter, Delta: ptrInt(5)},
+			want:   models.Metrics{ID: "PollCount", MType: models.Counter, Delta: ptrInt(15)},
+		},
+		{
+			name:    "empty name",
+			metric:  models.Metrics{MType: models.Gauge, Value: ptrFloat(1)},
+			wantErr: ErrEmptyName,
+		},
+		{
+			name:    "unknown type",
+			metric:  models.Metrics{ID: "x", MType: "histogram", Value: ptrFloat(1)},
+			wantErr: ErrUnknownType,
+		},
+		{
+			name:    "gauge without value",
+			metric:  models.Metrics{ID: "Alloc", MType: models.Gauge, Delta: ptrInt(1)},
+			wantErr: ErrInvalidValue,
+		},
+		{
+			name:    "counter without delta",
+			metric:  models.Metrics{ID: "PollCount", MType: models.Counter, Value: ptrFloat(1)},
+			wantErr: ErrInvalidValue,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := newMockStorage()
+			storage.counters["PollCount"] = 10
+
+			got, err := NewMetricsService(storage).UpdateMetric(tt.metric)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("got error %v, want %v", err, tt.wantErr)
+			}
+
+			if tt.wantErr != nil {
+				return
+			}
+
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMetricsServiceMetric(t *testing.T) {
+	storage := newMockStorage()
+	storage.gauges["Alloc"] = 12.5
+	storage.counters["PollCount"] = 7
+
+	s := NewMetricsService(storage)
+
+	tests := []struct {
+		name    string
+		mType   string
+		metric  string
+		want    models.Metrics
+		wantErr error
+	}{
+		{
+			name:  "gauge",
+			mType: models.Gauge, metric: "Alloc",
+			want: models.Metrics{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(12.5)},
+		},
+		{
+			name:  "counter",
+			mType: models.Counter, metric: "PollCount",
+			want: models.Metrics{ID: "PollCount", MType: models.Counter, Delta: ptrInt(7)},
+		},
+		{name: "unknown gauge", mType: models.Gauge, metric: "nope", wantErr: ErrNotFound},
+		{name: "unknown counter", mType: models.Counter, metric: "nope", wantErr: ErrNotFound},
+		{name: "unknown type", mType: "histogram", metric: "Alloc", wantErr: ErrUnknownType},
+		{name: "empty name", mType: models.Gauge, metric: "", wantErr: ErrEmptyName},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.Metric(tt.mType, tt.metric)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("got error %v, want %v", err, tt.wantErr)
+			}
+
+			if tt.wantErr != nil {
+				return
+			}
+
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }

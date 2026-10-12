@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -15,11 +16,13 @@ import (
 )
 
 type stubService struct {
-	updateCalls [][3]string
-	updateErr   error
-	value       string
-	valueErr    error
-	all         []models.Metrics
+	updateCalls       [][3]string
+	updateMetricCalls []models.Metrics
+	updateErr         error
+	value             string
+	metric            models.Metrics
+	valueErr          error
+	all               []models.Metrics
 }
 
 func (s *stubService) Update(mType, name, rawValue string) error {
@@ -30,6 +33,16 @@ func (s *stubService) Update(mType, name, rawValue string) error {
 
 func (s *stubService) Value(_, _ string) (string, error) {
 	return s.value, s.valueErr
+}
+
+func (s *stubService) UpdateMetric(m models.Metrics) (models.Metrics, error) {
+	s.updateMetricCalls = append(s.updateMetricCalls, m)
+
+	return s.metric, s.updateErr
+}
+
+func (s *stubService) Metric(_, _ string) (models.Metrics, error) {
+	return s.metric, s.valueErr
 }
 
 func (s *stubService) All() []models.Metrics {
@@ -51,6 +64,30 @@ func TestHandlerPassesUpdateParamsToService(t *testing.T) {
 	want := [3]string{"gauge", "Alloc", "12.5"}
 	if len(stub.updateCalls) != 1 || stub.updateCalls[0] != want {
 		t.Errorf("got Update calls %v, want exactly one %v", stub.updateCalls, want)
+	}
+}
+
+func TestHandlerPassesJSONMetricToService(t *testing.T) {
+	stub := &stubService{metric: models.Metrics{ID: "PollCount", MType: models.Counter, Delta: ptrInt(12)}}
+	router := NewMetricsHandler(stub, zap.NewNop()).Router()
+
+	req := httptest.NewRequest(http.MethodPost, "/update/", strings.NewReader(`{"id":"PollCount","type":"counter","delta":5}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+
+	want := models.Metrics{ID: "PollCount", MType: models.Counter, Delta: ptrInt(5)}
+	if len(stub.updateMetricCalls) != 1 || !reflect.DeepEqual(stub.updateMetricCalls[0], want) {
+		t.Errorf("got UpdateMetric calls %+v, want exactly one %+v", stub.updateMetricCalls, want)
+	}
+
+	if body := rec.Body.String(); body != `{"id":"PollCount","type":"counter","delta":12}` {
+		t.Errorf("got body %s, want the metric returned by the service", body)
 	}
 }
 
@@ -76,7 +113,15 @@ func TestHandlerMapsServiceErrorsToStatus(t *testing.T) {
 			router.ServeHTTP(rec, req)
 
 			if rec.Code != tt.want {
-				t.Errorf("got status %d, want %d", rec.Code, tt.want)
+				t.Errorf("GET /value/gauge/Alloc: got status %d, want %d", rec.Code, tt.want)
+			}
+
+			req = httptest.NewRequest(http.MethodPost, "/value/", strings.NewReader(`{"id":"Alloc","type":"gauge"}`))
+			rec = httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.want {
+				t.Errorf("POST /value/: got status %d, want %d", rec.Code, tt.want)
 			}
 		})
 	}

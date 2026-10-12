@@ -84,6 +84,59 @@ func (s *MetricsService) Value(mType, name string) (string, error) {
 	}
 }
 
+func (s *MetricsService) UpdateMetric(m models.Metrics) (models.Metrics, error) {
+	if m.ID == "" {
+		return models.Metrics{}, ErrEmptyName
+	}
+
+	switch m.MType {
+	case models.Gauge:
+		if m.Value == nil {
+			return models.Metrics{}, ErrInvalidValue
+		}
+
+		value := *m.Value
+		s.storage.SetGauge(m.ID, value)
+
+		return models.Metrics{ID: m.ID, MType: models.Gauge, Value: &value}, nil
+	case models.Counter:
+		if m.Delta == nil {
+			return models.Metrics{}, ErrInvalidValue
+		}
+
+		total := s.storage.AddCounter(m.ID, *m.Delta)
+
+		return models.Metrics{ID: m.ID, MType: models.Counter, Delta: &total}, nil
+	default:
+		return models.Metrics{}, ErrUnknownType
+	}
+}
+
+func (s *MetricsService) Metric(mType, name string) (models.Metrics, error) {
+	if name == "" {
+		return models.Metrics{}, ErrEmptyName
+	}
+
+	switch mType {
+	case models.Gauge:
+		value, ok := s.storage.Gauge(name)
+		if !ok {
+			return models.Metrics{}, ErrNotFound
+		}
+
+		return models.Metrics{ID: name, MType: models.Gauge, Value: &value}, nil
+	case models.Counter:
+		delta, ok := s.storage.Counter(name)
+		if !ok {
+			return models.Metrics{}, ErrNotFound
+		}
+
+		return models.Metrics{ID: name, MType: models.Counter, Delta: &delta}, nil
+	default:
+		return models.Metrics{}, ErrUnknownType
+	}
+}
+
 func (s *MetricsService) All() []models.Metrics {
 	return s.storage.All()
 }

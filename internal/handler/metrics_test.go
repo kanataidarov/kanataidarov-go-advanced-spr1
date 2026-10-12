@@ -3,9 +3,11 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/mailru/easyjson"
 	"go.uber.org/zap"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
@@ -158,5 +160,171 @@ func TestMetricsHandlerIndex(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body does not contain %q", want)
 		}
+	}
+}
+
+func postJSON(t *testing.T, router http.Handler, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	return rec
+}
+
+func decodeMetric(t *testing.T, rec *httptest.ResponseRecorder) models.Metrics {
+	t.Helper()
+
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("got Content-Type %q, want application/json", got)
+	}
+
+	var m models.Metrics
+	if err := easyjson.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatalf("cannot decode response %q: %v", rec.Body.String(), err)
+	}
+
+	return m
+}
+
+func TestMetricsHandlerUpdateJSON(t *testing.T) {
+	for _, path := range []string{"/update", "/update/"} {
+		t.Run(path, func(t *testing.T) {
+			router, storage := newTestRouter()
+
+			rec := postJSON(t, router, path, `{"id":"LastGC","type":"gauge","value":1744184459}`)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("gauge: got status %d, want 200: %s", rec.Code, rec.Body.String())
+			}
+
+			if got := decodeMetric(t, rec); got.ID != "LastGC" || got.MType != models.Gauge ||
+				got.Value == nil || *got.Value != 1744184459 || got.Delta != nil {
+				t.Errorf("gauge: got response %+v", got)
+			}
+
+			if v, ok := storage.Gauge("LastGC"); !ok || v != 1744184459 {
+				t.Errorf("gauge: got stored (%v, %v), want (1744184459, true)", v, ok)
+			}
+
+			for i, wantTotal := range []int64{5, 12} {
+				delta := []string{"5", "7"}[i]
+
+				rec = postJSON(t, router, path, `{"id":"PollCount","type":"counter","delta":`+delta+`}`)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("counter: got status %d, want 200: %s", rec.Code, rec.Body.String())
+				}
+
+				if got := decodeMetric(t, rec); got.Delta == nil || *got.Delta != wantTotal {
+					t.Errorf("counter: got response %+v, want delta %d", got, wantTotal)
+				}
+			}
+		})
+	}
+}
+
+func TestMetricsHandlerUpdateJSONErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{name: "empty body", body: "", wantStatus: http.StatusBadRequest},
+		{name: "malformed JSON", body: `{"id":"Alloc"`, wantStatus: http.StatusBadRequest},
+		{name: "wrong value type", body: `{"id":"Alloc","type":"gauge","value":"12"}`, wantStatus: http.StatusBadRequest},
+		{name: "unknown type", body: `{"id":"Alloc","type":"histogram","value":1}`, wantStatus: http.StatusBadRequest},
+		{name: "gauge without value", body: `{"id":"Alloc","type":"gauge"}`, wantStatus: http.StatusBadRequest},
+		{name: "counter without delta", body: `{"id":"PollCount","type":"counter","value":1}`, wantStatus: http.StatusBadRequest},
+		{name: "without name", body: `{"type":"gauge","value":1}`, wantStatus: http.StatusNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router, storage := newTestRouter()
+
+			rec := postJSON(t, router, "/update/", tt.body)
+			if rec.Code != tt.wantStatus {
+				t.Errorf("got status %d, want %d", rec.Code, tt.wantStatus)
+			}
+
+			if n := len(storage.All()); n != 0 {
+				t.Errorf("got %d stored metrics, want 0", n)
+			}
+		})
+	}
+}
+
+func TestMetricsHandlerValueJSON(t *testing.T) {
+	router, storage := newTestRouter()
+	storage.SetGauge("Alloc", 12.5)
+	storage.AddCounter("PollCount", 7)
+
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantStatus int
+		want       models.Metrics
+	}{
+		{
+			name:       "gauge",
+			path:       "/value/",
+			body:       `{"id":"Alloc","type":"gauge"}`,
+			wantStatus: http.StatusOK,
+			want:       models.Metrics{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(12.5)},
+		},
+		{
+			name:       "counter without trailing slash",
+			path:       "/value",
+			body:       `{"id":"PollCount","type":"counter"}`,
+			wantStatus: http.StatusOK,
+			want:       models.Metrics{ID: "PollCount", MType: models.Counter, Delta: ptrInt(7)},
+		},
+		{name: "unknown metric", path: "/value/", body: `{"id":"Nope","type":"gauge"}`, wantStatus: http.StatusNotFound},
+		{name: "unknown type", path: "/value/", body: `{"id":"Alloc","type":"histogram"}`, wantStatus: http.StatusBadRequest},
+		{name: "without name", path: "/value/", body: `{"type":"gauge"}`, wantStatus: http.StatusNotFound},
+		{name: "malformed JSON", path: "/value/", body: `{"id":`, wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := postJSON(t, router, tt.path, tt.body)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("got status %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+
+			if got := decodeMetric(t, rec); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMetricsHandlerJSONAndURLShareStorage(t *testing.T) {
+	router, _ := newTestRouter()
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/update/counter/PollCount/3", http.NoBody))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+
+	rec = postJSON(t, router, "/update/", `{"id":"PollCount","type":"counter","delta":4}`)
+	if got := decodeMetric(t, rec); got.Delta == nil || *got.Delta != 7 {
+		t.Fatalf("got %+v, want delta 7", got)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/value/counter/PollCount", http.NoBody))
+
+	if rec.Body.String() != "7" {
+		t.Errorf("got %q, want 7", rec.Body.String())
 	}
 }

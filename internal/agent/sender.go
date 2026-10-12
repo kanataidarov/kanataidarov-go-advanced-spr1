@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mailru/easyjson"
 
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
@@ -33,19 +36,17 @@ func (s *Sender) ReportInterval() time.Duration {
 }
 
 func (s *Sender) Send(ctx context.Context, metric models.Metrics) error {
-	value, err := metricValue(metric)
+	body, err := easyjson.Marshal(metric)
+	if err != nil {
+		return fmt.Errorf("cannot encode metric %s: %w", metric.ID, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/update/", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/update/%s/%s/%s", s.baseURL, metric.MType, metric.ID, value)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -53,6 +54,7 @@ func (s *Sender) Send(ctx context.Context, metric models.Metrics) error {
 	}
 
 	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
 
@@ -61,25 +63,6 @@ func (s *Sender) Send(ctx context.Context, metric models.Metrics) error {
 	}
 
 	return nil
-}
-
-func metricValue(metric models.Metrics) (string, error) {
-	switch metric.MType {
-	case models.Gauge:
-		if metric.Value == nil {
-			return "", fmt.Errorf("gauge %s has no value", metric.ID)
-		}
-
-		return strconv.FormatFloat(*metric.Value, 'f', -1, 64), nil
-	case models.Counter:
-		if metric.Delta == nil {
-			return "", fmt.Errorf("counter %s has no delta", metric.ID)
-		}
-
-		return strconv.FormatInt(*metric.Delta, 10), nil
-	default:
-		return "", fmt.Errorf("unknown metric type %q", metric.MType)
-	}
 }
 
 func normalizeBaseURL(address string) string {
