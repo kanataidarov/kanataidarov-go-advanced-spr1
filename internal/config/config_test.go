@@ -221,3 +221,93 @@ func TestAgentConfigRejectsBadEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestServerConfigStorageDefaults(t *testing.T) {
+	cfg, err := ParseServerConfig("server", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := ServerConfig{
+		Address:         defaultServerAddress,
+		StoreInterval:   300 * time.Second,
+		FileStoragePath: defaultFileStoragePath,
+		Restore:         true,
+	}
+	if cfg != want {
+		t.Errorf("got %+v, want %+v", cfg, want)
+	}
+}
+
+func TestServerConfigStoragePriority(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		env  map[string]string
+		want ServerConfig
+	}{
+		{
+			name: "flags",
+			args: []string{"-i=0", "-f=/tmp/flag.json", "-r=false"},
+			want: ServerConfig{Address: defaultServerAddress, StoreInterval: 0, FileStoragePath: "/tmp/flag.json", Restore: false},
+		},
+		{
+			name: "env only",
+			env:  map[string]string{"STORE_INTERVAL": "5", "FILE_STORAGE_PATH": "/tmp/env.json", "RESTORE": "false"},
+			want: ServerConfig{Address: defaultServerAddress, StoreInterval: 5 * time.Second, FileStoragePath: "/tmp/env.json", Restore: false},
+		},
+		{
+			name: "env beats flags",
+			args: []string{"-i=10", "-f=/tmp/flag.json", "-r=false"},
+			env:  map[string]string{"STORE_INTERVAL": "0", "FILE_STORAGE_PATH": "/tmp/env.json", "RESTORE": "true"},
+			want: ServerConfig{Address: defaultServerAddress, StoreInterval: 0, FileStoragePath: "/tmp/env.json", Restore: true},
+		},
+		{
+			name: "env and flags mixed",
+			args: []string{"-i=10", "-r=false"},
+			env:  map[string]string{"FILE_STORAGE_PATH": "/tmp/env.json"},
+			want: ServerConfig{Address: defaultServerAddress, StoreInterval: 10 * time.Second, FileStoragePath: "/tmp/env.json", Restore: false},
+		},
+		{
+			name: "empty flag disables file storage",
+			args: []string{"-f="},
+			want: ServerConfig{Address: defaultServerAddress, StoreInterval: 300 * time.Second, FileStoragePath: "", Restore: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseServerConfig("server", tt.args, envMap(tt.env))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if cfg != tt.want {
+				t.Errorf("got %+v, want %+v", cfg, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerConfigRejectsBadStorageSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		env  map[string]string
+	}{
+		{name: "negative flag interval", args: []string{"-i=-1"}},
+		{name: "non-numeric flag interval", args: []string{"-i=abc"}},
+		{name: "bad flag restore", args: []string{"-r=maybe"}},
+		{name: "negative env interval", env: map[string]string{"STORE_INTERVAL": "-5"}},
+		{name: "non-numeric env interval", env: map[string]string{"STORE_INTERVAL": "1.5"}},
+		{name: "bad env restore", env: map[string]string{"RESTORE": "maybe"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseServerConfig("server", tt.args, envMap(tt.env)); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+}

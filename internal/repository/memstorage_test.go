@@ -66,3 +66,51 @@ func TestMemStorageAll(t *testing.T) {
 		t.Errorf("unexpected counter metric: %+v", m)
 	}
 }
+
+func TestMemStorageRestore(t *testing.T) {
+	s := NewMemStorage()
+	s.SetGauge("Old", 1)
+	s.AddCounter("PollCount", 100)
+
+	err := s.Restore([]models.Metrics{
+		{ID: "LastGC", MType: models.Gauge, Value: ptrFloat(1257894000000000000)},
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(42)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := s.Gauge("Old"); ok {
+		t.Error("restore must replace previous contents")
+	}
+
+	if v, ok := s.Gauge("LastGC"); !ok || v != 1257894000000000000 {
+		t.Errorf("got gauge (%v, %v)", v, ok)
+	}
+
+	if v, ok := s.Counter("PollCount"); !ok || v != 42 {
+		t.Errorf("got counter (%v, %v), want (42, true): restore sets values, not adds", v, ok)
+	}
+}
+
+func TestMemStorageRestoreRejectsInvalidMetrics(t *testing.T) {
+	cases := []models.Metrics{
+		{MType: models.Gauge, Value: ptrFloat(1)},
+		{ID: "A", MType: models.Gauge},
+		{ID: "B", MType: models.Counter, Value: ptrFloat(1)},
+		{ID: "C", MType: "histogram", Value: ptrFloat(1)},
+	}
+
+	for _, m := range cases {
+		s := NewMemStorage()
+		s.SetGauge("Keep", 1)
+
+		if err := s.Restore([]models.Metrics{m}); err == nil {
+			t.Errorf("%+v: expected an error", m)
+		}
+
+		if _, ok := s.Gauge("Keep"); !ok {
+			t.Errorf("%+v: failed restore must not change the storage", m)
+		}
+	}
+}

@@ -9,21 +9,30 @@ import (
 )
 
 const (
-	defaultServerAddress  = "localhost:8080"
-	defaultPollInterval   = 2 * time.Second
-	defaultReportInterval = 10 * time.Second
+	defaultServerAddress   = "localhost:8080"
+	defaultPollInterval    = 2 * time.Second
+	defaultReportInterval  = 10 * time.Second
+	defaultStoreInterval   = 300 * time.Second
+	defaultFileStoragePath = "data/metrics-db.json"
+	defaultRestore         = true
 )
 
 const (
-	envAddress        = "ADDRESS"
-	envReportInterval = "REPORT_INTERVAL"
-	envPollInterval   = "POLL_INTERVAL"
+	envAddress         = "ADDRESS"
+	envReportInterval  = "REPORT_INTERVAL"
+	envPollInterval    = "POLL_INTERVAL"
+	envStoreInterval   = "STORE_INTERVAL"
+	envFileStoragePath = "FILE_STORAGE_PATH"
+	envRestore         = "RESTORE"
 )
 
 type LookupEnvFunc func(key string) (string, bool)
 
 type ServerConfig struct {
-	Address string
+	Address         string
+	StoreInterval   time.Duration
+	FileStoragePath string
+	Restore         bool
 }
 
 func NewServerConfig() (ServerConfig, error) {
@@ -31,10 +40,17 @@ func NewServerConfig() (ServerConfig, error) {
 }
 
 func ParseServerConfig(name string, args []string, lookupEnv LookupEnvFunc) (ServerConfig, error) {
-	cfg := ServerConfig{Address: defaultServerAddress}
+	cfg := ServerConfig{
+		Address:         defaultServerAddress,
+		FileStoragePath: defaultFileStoragePath,
+		Restore:         defaultRestore,
+	}
 
 	fs := newFlagSet(name)
 	fs.StringVar(&cfg.Address, "a", cfg.Address, "address of the HTTP server endpoint (env "+envAddress+")")
+	storeInterval := fs.Int("i", seconds(defaultStoreInterval), "metrics store interval, in seconds; 0 saves on every update (env "+envStoreInterval+")")
+	fs.StringVar(&cfg.FileStoragePath, "f", cfg.FileStoragePath, "file to store metrics in; empty disables storing (env "+envFileStoragePath+")")
+	fs.BoolVar(&cfg.Restore, "r", cfg.Restore, "restore metrics from the file on start (env "+envRestore+")")
 
 	if err := parse(fs, args); err != nil {
 		return ServerConfig{}, err
@@ -43,6 +59,24 @@ func ParseServerConfig(name string, args []string, lookupEnv LookupEnvFunc) (Ser
 	if v, ok := envValue(lookupEnv, envAddress); ok {
 		cfg.Address = v
 	}
+
+	if err := envSeconds(lookupEnv, envStoreInterval, storeInterval); err != nil {
+		return ServerConfig{}, err
+	}
+
+	if v, ok := envValue(lookupEnv, envFileStoragePath); ok {
+		cfg.FileStoragePath = v
+	}
+
+	if err := envBool(lookupEnv, envRestore, &cfg.Restore); err != nil {
+		return ServerConfig{}, err
+	}
+
+	if *storeInterval < 0 {
+		return ServerConfig{}, fmt.Errorf("invalid store interval %d (flag -i or %s): must not be negative", *storeInterval, envStoreInterval)
+	}
+
+	cfg.StoreInterval = time.Duration(*storeInterval) * time.Second
 
 	return cfg, nil
 }
@@ -154,6 +188,22 @@ func envSeconds(lookupEnv LookupEnvFunc, key string, dst *int) error {
 	}
 
 	*dst = n
+
+	return nil
+}
+
+func envBool(lookupEnv LookupEnvFunc, key string, dst *bool) error {
+	v, ok := envValue(lookupEnv, key)
+	if !ok {
+		return nil
+	}
+
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fmt.Errorf("invalid %s=%q: must be true or false", key, v)
+	}
+
+	*dst = b
 
 	return nil
 }
