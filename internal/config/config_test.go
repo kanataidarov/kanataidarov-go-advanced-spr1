@@ -215,7 +215,6 @@ func TestAgentConfigRejectsBadEnv(t *testing.T) {
 	}
 
 	for _, env := range cases {
-		// валидный флаг не должен спасать невалидную переменную окружения
 		if _, err := ParseAgentConfig("agent", []string{"-r=5", "-p=1"}, envMap(env)); err == nil {
 			t.Errorf("env %v must produce an error", env)
 		}
