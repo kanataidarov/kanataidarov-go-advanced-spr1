@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -41,12 +42,18 @@ func (s *Sender) Send(ctx context.Context, metric models.Metrics) error {
 		return fmt.Errorf("cannot encode metric %s: %w", metric.ID, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/update/", bytes.NewReader(body))
+	compressed, err := gzipBytes(body)
+	if err != nil {
+		return fmt.Errorf("cannot compress metric %s: %w", metric.ID, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/update/", bytes.NewReader(compressed))
 	if err != nil {
 		return err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -63,6 +70,22 @@ func (s *Sender) Send(ctx context.Context, metric models.Metrics) error {
 	}
 
 	return nil
+}
+
+func gzipBytes(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+
+	zw := gzip.NewWriter(&buf)
+
+	if _, err := zw.Write(data); err != nil {
+		return nil, err
+	}
+
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
 }
 
 func normalizeBaseURL(address string) string {

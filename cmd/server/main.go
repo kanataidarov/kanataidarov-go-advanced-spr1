@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/compress"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/handler"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/logger"
@@ -39,7 +40,7 @@ func run(zlog *zap.Logger) error {
 	metrics := service.NewMetricsService(storage)
 	metricsHandler := handler.NewMetricsHandler(metrics, zlog)
 
-	router := logger.RequestLogger(zlog)(metricsHandler.Router())
+	router := logger.RequestLogger(zlog)(compress.Gzip(metricsHandler.Router()))
 
 	zlog.Info("metrics server is listening", zap.String("address", cfg.Address))
 

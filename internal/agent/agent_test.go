@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"compress/gzip"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -46,11 +47,12 @@ func TestNormalizeBaseURL(t *testing.T) {
 }
 
 type recordedRequest struct {
-	method      string
-	path        string
-	contentType string
-	metric      models.Metrics
-	decodeErr   error
+	method          string
+	path            string
+	contentType     string
+	contentEncoding string
+	metric          models.Metrics
+	decodeErr       error
 }
 
 func newRecordingServer(t *testing.T) (*httptest.Server, func() []recordedRequest) {
@@ -63,11 +65,18 @@ func newRecordingServer(t *testing.T) (*httptest.Server, func() []recordedReques
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := recordedRequest{
-			method:      r.Method,
-			path:        r.URL.Path,
-			contentType: r.Header.Get("Content-Type"),
+			method:          r.Method,
+			path:            r.URL.Path,
+			contentType:     r.Header.Get("Content-Type"),
+			contentEncoding: r.Header.Get("Content-Encoding"),
 		}
-		req.decodeErr = easyjson.UnmarshalFromReader(r.Body, &req.metric)
+
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			req.decodeErr = err
+		} else {
+			req.decodeErr = easyjson.UnmarshalFromReader(zr, &req.metric)
+		}
 
 		mu.Lock()
 		recorded = append(recorded, req)
@@ -115,6 +124,10 @@ func TestAgentReportSendsAllMetricsAsJSON(t *testing.T) {
 
 		if req.contentType != "application/json" {
 			t.Errorf("got Content-Type %q, want application/json", req.contentType)
+		}
+
+		if req.contentEncoding != "gzip" {
+			t.Errorf("got Content-Encoding %q, want gzip", req.contentEncoding)
 		}
 
 		if req.decodeErr != nil {
