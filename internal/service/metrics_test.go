@@ -43,6 +43,7 @@ func (m *mockStorage) All() []models.Metrics { return nil }
 var (
 	_ Storage = (*mockStorage)(nil)
 	_ Storage = (*repository.MemStorage)(nil)
+	_ Storage = (*repository.PersistentStorage)(nil)
 )
 
 func TestMetricsServiceUpdate(t *testing.T) {

@@ -112,7 +112,7 @@ func run(zlog *zap.Logger) error {
 		stopSaver()
 		saver.Wait()
 
-		return fmt.Errorf("http server: %w", err)
+		return errors.Join(fmt.Errorf("http server: %w", err), saveOnExit(persistent, cfg.FileStoragePath, zlog))
 	case <-ctx.Done():
 		zlog.Info("shutting down")
 	}
@@ -127,13 +127,19 @@ func run(zlog *zap.Logger) error {
 	stopSaver()
 	saver.Wait()
 
-	if persistent != nil {
-		if err := persistent.Save(); err != nil {
-			return fmt.Errorf("cannot save metrics on shutdown: %w", err)
-		}
+	return saveOnExit(persistent, cfg.FileStoragePath, zlog)
+}
 
-		zlog.Info("metrics saved", zap.String("path", cfg.FileStoragePath))
+func saveOnExit(persistent *repository.PersistentStorage, path string, zlog *zap.Logger) error {
+	if persistent == nil {
+		return nil
 	}
+
+	if err := persistent.Save(); err != nil {
+		return fmt.Errorf("cannot save metrics on shutdown: %w", err)
+	}
+
+	zlog.Info("metrics saved", zap.String("path", path))
 
 	return nil
 }

@@ -6,10 +6,14 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 )
 
+// PersistentStorage wraps MemStorage without embedding it: every method is
+// delegated explicitly, so a new storage method cannot silently bypass saving.
 type PersistentStorage struct {
-	*MemStorage
+	mem *MemStorage
 
 	file     *FileStore
 	syncMode bool
@@ -20,31 +24,42 @@ type PersistentStorage struct {
 
 func NewPersistentStorage(mem *MemStorage, file *FileStore, syncMode bool, log *zap.Logger) *PersistentStorage {
 	return &PersistentStorage{
-		MemStorage: mem,
-		file:       file,
-		syncMode:   syncMode,
-		log:        log,
+		mem:      mem,
+		file:     file,
+		syncMode: syncMode,
+		log:      log,
 	}
 }
 
 func (p *PersistentStorage) SetGauge(name string, value float64) {
-	p.MemStorage.SetGauge(name, value)
+	p.mem.SetGauge(name, value)
 	p.saveIfSync()
 }
 
 func (p *PersistentStorage) AddCounter(name string, delta int64) int64 {
-	total := p.MemStorage.AddCounter(name, delta)
+	total := p.mem.AddCounter(name, delta)
 	p.saveIfSync()
 
 	return total
 }
 
-func (p *PersistentStorage) Save() error {
+func (p *PersistentStorage) Gauge(name string) (float64, bool) {
+	return p.mem.Gauge(name)
+}
 
+func (p *PersistentStorage) Counter(name string) (int64, bool) {
+	return p.mem.Counter(name)
+}
+
+func (p *PersistentStorage) All() []models.Metrics {
+	return p.mem.All()
+}
+
+func (p *PersistentStorage) Save() error {
 	p.saveMu.Lock()
 	defer p.saveMu.Unlock()
 
-	return p.file.Save(p.All())
+	return p.file.Save(p.mem.All())
 }
 
 func (p *PersistentStorage) Run(ctx context.Context, interval time.Duration) {
