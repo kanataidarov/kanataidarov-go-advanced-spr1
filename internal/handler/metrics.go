@@ -43,11 +43,11 @@ var indexTemplate = template.Must(template.New("index").Parse(`<!DOCTYPE html>
 `))
 
 type MetricsService interface {
-	Update(mType, name, rawValue string) error
-	Value(mType, name string) (string, error)
-	UpdateMetric(m models.Metrics) (models.Metrics, error)
-	Metric(mType, name string) (models.Metrics, error)
-	All() []models.Metrics
+	Update(ctx context.Context, mType, name, rawValue string) error
+	Value(ctx context.Context, mType, name string) (string, error)
+	UpdateMetric(ctx context.Context, m models.Metrics) (models.Metrics, error)
+	Metric(ctx context.Context, mType, name string) (models.Metrics, error)
+	All(ctx context.Context) ([]models.Metrics, error)
 }
 
 type Pinger interface {
@@ -110,7 +110,7 @@ func (h *MetricsHandler) update(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	value := chi.URLParam(r, "value")
 
-	if err := h.metrics.Update(mType, name, value); err != nil {
+	if err := h.metrics.Update(r.Context(), mType, name, value); err != nil {
 		h.writeServiceError(w, err)
 
 		return
@@ -123,7 +123,7 @@ func (h *MetricsHandler) value(w http.ResponseWriter, r *http.Request) {
 	mType := chi.URLParam(r, "type")
 	name := chi.URLParam(r, "name")
 
-	value, err := h.metrics.Value(mType, name)
+	value, err := h.metrics.Value(r.Context(), mType, name)
 	if err != nil {
 		h.writeServiceError(w, err)
 
@@ -141,7 +141,7 @@ func (h *MetricsHandler) updateJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.metrics.UpdateMetric(req)
+	updated, err := h.metrics.UpdateMetric(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, err)
 
@@ -159,7 +159,7 @@ func (h *MetricsHandler) valueJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current, err := h.metrics.Metric(req.MType, req.ID)
+	current, err := h.metrics.Metric(r.Context(), req.MType, req.ID)
 	if err != nil {
 		h.writeServiceError(w, err)
 
@@ -169,8 +169,13 @@ func (h *MetricsHandler) valueJSON(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, current)
 }
 
-func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
-	all := h.metrics.All()
+func (h *MetricsHandler) index(w http.ResponseWriter, r *http.Request) {
+	all, err := h.metrics.All(r.Context())
+	if err != nil {
+		h.writeServiceError(w, err)
+
+		return
+	}
 
 	views := make([]metricView, 0, len(all))
 
@@ -208,7 +213,7 @@ func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
 
 func (h *MetricsHandler) ping(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
-		http.Error(w, "database is not configured", http.StatusInternalServerError)
+		http.Error(w, "database is not available", http.StatusInternalServerError)
 
 		return
 	}

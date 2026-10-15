@@ -24,30 +24,31 @@ type stubService struct {
 	metric            models.Metrics
 	valueErr          error
 	all               []models.Metrics
+	allErr            error
 }
 
-func (s *stubService) Update(mType, name, rawValue string) error {
+func (s *stubService) Update(_ context.Context, mType, name, rawValue string) error {
 	s.updateCalls = append(s.updateCalls, [3]string{mType, name, rawValue})
 
 	return s.updateErr
 }
 
-func (s *stubService) Value(_, _ string) (string, error) {
+func (s *stubService) Value(_ context.Context, _, _ string) (string, error) {
 	return s.value, s.valueErr
 }
 
-func (s *stubService) UpdateMetric(m models.Metrics) (models.Metrics, error) {
+func (s *stubService) UpdateMetric(_ context.Context, m models.Metrics) (models.Metrics, error) {
 	s.updateMetricCalls = append(s.updateMetricCalls, m)
 
 	return s.metric, s.updateErr
 }
 
-func (s *stubService) Metric(_, _ string) (models.Metrics, error) {
+func (s *stubService) Metric(_ context.Context, _, _ string) (models.Metrics, error) {
 	return s.metric, s.valueErr
 }
 
-func (s *stubService) All() []models.Metrics {
-	return s.all
+func (s *stubService) All(_ context.Context) ([]models.Metrics, error) {
+	return s.all, s.allErr
 }
 
 func TestHandlerPassesUpdateParamsToService(t *testing.T) {
@@ -251,5 +252,21 @@ func TestPing(t *testing.T) {
 				t.Errorf("got %d Ping calls, want %d", tt.pinger.calls, tt.wantCalls)
 			}
 		})
+	}
+}
+
+func TestHandlerIndexStorageError(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	router := NewMetricsHandler(&stubService{allErr: errors.New("connection refused")}, zap.New(core)).Router()
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("got status %d, want 500", rec.Code)
+	}
+
+	if n := logs.FilterLevelExact(zap.ErrorLevel).Len(); n != 1 {
+		t.Errorf("got %d error log entries, want 1", n)
 	}
 }

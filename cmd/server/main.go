@@ -23,7 +23,10 @@ import (
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/service"
 )
 
-const shutdownTimeout = 5 * time.Second
+const (
+	shutdownTimeout = 5 * time.Second
+	migrateTimeout  = 10 * time.Second
+)
 
 func main() {
 	zlog, err := logger.New()
@@ -51,11 +54,18 @@ func run(zlog *zap.Logger) error {
 	mem := repository.NewMemStorage()
 
 	var (
-		storage    service.Storage = mem
-		persistent *repository.PersistentStorage
+		storage     service.Storage = mem
+		storageKind                 = "memory"
+		persistent  *repository.PersistentStorage
+		handlerOpts []handler.Option
 	)
 
-	if cfg.FileStoragePath != "" {
+	if db := openDatabase(ctx, cfg.DatabaseDSN, zlog); db != nil {
+		defer db.Close()
+
+		storage, storageKind = db, "postgres"
+		handlerOpts = append(handlerOpts, handler.WithPinger(db))
+	} else if cfg.FileStoragePath != "" {
 		if err := os.MkdirAll(filepath.Dir(cfg.FileStoragePath), 0o750); err != nil {
 			return fmt.Errorf("cannot create directory for %s: %w", cfg.FileStoragePath, err)
 		}
@@ -69,19 +79,7 @@ func run(zlog *zap.Logger) error {
 		}
 
 		persistent = repository.NewPersistentStorage(mem, file, cfg.StoreInterval == 0, zlog)
-		storage = persistent
-	}
-
-	var handlerOpts []handler.Option
-
-	if cfg.DatabaseDSN != "" {
-		db, err := postgres.New(ctx, cfg.DatabaseDSN)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-
-		handlerOpts = append(handlerOpts, handler.WithPinger(db))
+		storage, storageKind = persistent, "file"
 	}
 
 	metrics := service.NewMetricsService(storage)
@@ -109,10 +107,10 @@ func run(zlog *zap.Logger) error {
 
 	zlog.Info("metrics server is listening",
 		zap.String("address", cfg.Address),
+		zap.String("storage", storageKind),
 		zap.String("file_storage_path", cfg.FileStoragePath),
 		zap.Duration("store_interval", cfg.StoreInterval),
 		zap.Bool("restore", cfg.Restore),
-		zap.Bool("database", cfg.DatabaseDSN != ""),
 	)
 
 	serveErr := make(chan error, 1)
@@ -142,6 +140,32 @@ func run(zlog *zap.Logger) error {
 	saver.Wait()
 
 	return saveOnExit(persistent, cfg.FileStoragePath, zlog)
+}
+
+// Порядок проверки хранения: PostgreSQL (DATABASE_DSN / -d), затем файл, затем память.
+func openDatabase(ctx context.Context, dsn string, zlog *zap.Logger) *postgres.DB {
+	if dsn == "" {
+		return nil
+	}
+
+	db, err := postgres.New(ctx, dsn)
+	if err != nil {
+		zlog.Error("cannot use database, falling back to file or memory storage", zap.Error(err))
+
+		return nil
+	}
+
+	migrateCtx, cancel := context.WithTimeout(ctx, migrateTimeout)
+	defer cancel()
+
+	if err := db.Migrate(migrateCtx); err != nil {
+		db.Close()
+		zlog.Error("cannot use database, falling back to file or memory storage", zap.Error(err))
+
+		return nil
+	}
+
+	return db
 }
 
 func saveOnExit(persistent *repository.PersistentStorage, path string, zlog *zap.Logger) error {

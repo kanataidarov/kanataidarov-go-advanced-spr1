@@ -5,6 +5,10 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+
+	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/migrations"
 )
 
 type DB struct {
@@ -18,6 +22,20 @@ func New(ctx context.Context, dsn string) (*DB, error) {
 	}
 
 	return &DB{pool: pool}, nil
+}
+
+func (db *DB) Migrate(ctx context.Context) error {
+	provider, err := goose.NewProvider(goose.DialectPostgres, stdlib.OpenDBFromPool(db.pool), migrations.FS)
+	if err != nil {
+		return fmt.Errorf("cannot create migration provider: %w", err)
+	}
+	defer provider.Close()
+
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("cannot apply migrations: %w", err)
+	}
+
+	return nil
 }
 
 func (db *DB) Ping(ctx context.Context) error {

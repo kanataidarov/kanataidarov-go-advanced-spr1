@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -12,33 +13,46 @@ import (
 type mockStorage struct {
 	gauges   map[string]float64
 	counters map[string]int64
+	err      error
 }
 
 func newMockStorage() *mockStorage {
 	return &mockStorage{gauges: map[string]float64{}, counters: map[string]int64{}}
 }
 
-func (m *mockStorage) SetGauge(name string, value float64) { m.gauges[name] = value }
+func (m *mockStorage) SetGauge(_ context.Context, name string, value float64) error {
+	if m.err != nil {
+		return m.err
+	}
 
-func (m *mockStorage) AddCounter(name string, delta int64) int64 {
+	m.gauges[name] = value
+
+	return nil
+}
+
+func (m *mockStorage) AddCounter(_ context.Context, name string, delta int64) (int64, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
+
 	m.counters[name] += delta
 
-	return m.counters[name]
+	return m.counters[name], nil
 }
 
-func (m *mockStorage) Gauge(name string) (float64, bool) {
+func (m *mockStorage) Gauge(_ context.Context, name string) (float64, bool, error) {
 	v, ok := m.gauges[name]
 
-	return v, ok
+	return v, ok, m.err
 }
 
-func (m *mockStorage) Counter(name string) (int64, bool) {
+func (m *mockStorage) Counter(_ context.Context, name string) (int64, bool, error) {
 	v, ok := m.counters[name]
 
-	return v, ok
+	return v, ok, m.err
 }
 
-func (m *mockStorage) All() []models.Metrics { return nil }
+func (m *mockStorage) All(_ context.Context) ([]models.Metrics, error) { return nil, m.err }
 
 var (
 	_ Storage = (*mockStorage)(nil)
@@ -66,7 +80,7 @@ func TestMetricsServiceUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := NewMetricsService(newMockStorage())
 
-			err := s.Update(tt.mType, tt.metric, tt.value)
+			err := s.Update(t.Context(), tt.mType, tt.metric, tt.value)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("got error %v, want %v", err, tt.wantErr)
 			}
@@ -79,7 +93,7 @@ func TestMetricsServiceCounterAccumulates(t *testing.T) {
 	s := NewMetricsService(storage)
 
 	for range 3 {
-		if err := s.Update(models.Counter, "PollCount", "2"); err != nil {
+		if err := s.Update(t.Context(), models.Counter, "PollCount", "2"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
@@ -113,7 +127,7 @@ func TestMetricsServiceValue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := s.Value(tt.mType, tt.metric)
+			got, err := s.Value(t.Context(), tt.mType, tt.metric)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -136,12 +150,17 @@ func TestMetricsServiceValue(t *testing.T) {
 func TestMetricsServiceAll(t *testing.T) {
 	s := NewMetricsService(repository.NewMemStorage())
 
-	if err := s.Update(models.Gauge, "Alloc", "1"); err != nil {
+	if err := s.Update(t.Context(), models.Gauge, "Alloc", "1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(s.All()) != 1 {
-		t.Errorf("got %d metrics, want 1", len(s.All()))
+	all, err := s.All(t.Context())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(all) != 1 {
+		t.Errorf("got %d metrics, want 1", len(all))
 	}
 }
 
@@ -192,7 +211,7 @@ func TestMetricsServiceUpdateMetric(t *testing.T) {
 			storage := newMockStorage()
 			storage.counters["PollCount"] = 10
 
-			got, err := NewMetricsService(storage).UpdateMetric(tt.metric)
+			got, err := NewMetricsService(storage).UpdateMetric(t.Context(), tt.metric)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("got error %v, want %v", err, tt.wantErr)
 			}
@@ -240,7 +259,7 @@ func TestMetricsServiceMetric(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := s.Metric(tt.mType, tt.metric)
+			got, err := s.Metric(t.Context(), tt.mType, tt.metric)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("got error %v, want %v", err, tt.wantErr)
 			}
@@ -253,5 +272,38 @@ func TestMetricsServiceMetric(t *testing.T) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMetricsServicePropagatesStorageErrors(t *testing.T) {
+	errDB := errors.New("connection refused")
+
+	storage := newMockStorage()
+	storage.err = errDB
+
+	s := NewMetricsService(storage)
+	ctx := t.Context()
+
+	checks := map[string]error{
+		"Update gauge":   s.Update(ctx, models.Gauge, "Alloc", "1"),
+		"Update counter": s.Update(ctx, models.Counter, "PollCount", "1"),
+	}
+
+	_, checks["UpdateMetric gauge"] = s.UpdateMetric(ctx, models.Metrics{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1)})
+	_, checks["UpdateMetric counter"] = s.UpdateMetric(ctx, models.Metrics{ID: "PollCount", MType: models.Counter, Delta: ptrInt(1)})
+	_, checks["Metric"] = s.Metric(ctx, models.Gauge, "Alloc")
+	_, checks["Value"] = s.Value(ctx, models.Counter, "PollCount")
+	_, checks["All"] = s.All(ctx)
+
+	for name, err := range checks {
+		if !errors.Is(err, errDB) {
+			t.Errorf("%s: got error %v, want wrapped %v", name, err, errDB)
+		}
+
+		for _, known := range []error{ErrEmptyName, ErrUnknownType, ErrInvalidValue, ErrNotFound} {
+			if errors.Is(err, known) {
+				t.Errorf("%s: storage error must not look like %v", name, known)
+			}
+		}
 	}
 }

@@ -6,17 +6,58 @@ import (
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 )
 
+func mustGauge(t *testing.T, s *MemStorage, name string) (float64, bool) {
+	t.Helper()
+
+	v, ok, err := s.Gauge(t.Context(), name)
+	if err != nil {
+		t.Fatalf("gauge %q: %v", name, err)
+	}
+
+	return v, ok
+}
+
+func mustCounter(t *testing.T, s *MemStorage, name string) (int64, bool) {
+	t.Helper()
+
+	v, ok, err := s.Counter(t.Context(), name)
+	if err != nil {
+		t.Fatalf("counter %q: %v", name, err)
+	}
+
+	return v, ok
+}
+
+func mustSetGauge(t *testing.T, s *MemStorage, name string, value float64) {
+	t.Helper()
+
+	if err := s.SetGauge(t.Context(), name, value); err != nil {
+		t.Fatalf("set gauge %q: %v", name, err)
+	}
+}
+
+func mustAddCounter(t *testing.T, s *MemStorage, name string, delta int64) int64 {
+	t.Helper()
+
+	total, err := s.AddCounter(t.Context(), name, delta)
+	if err != nil {
+		t.Fatalf("add counter %q: %v", name, err)
+	}
+
+	return total
+}
+
 func TestMemStorageGauge(t *testing.T) {
 	s := NewMemStorage()
 
-	if _, ok := s.Gauge("missing"); ok {
+	if _, ok := mustGauge(t, s, "missing"); ok {
 		t.Error("expected missing gauge")
 	}
 
-	s.SetGauge("Alloc", 1.5)
-	s.SetGauge("Alloc", 2.5)
+	mustSetGauge(t, s, "Alloc", 1.5)
+	mustSetGauge(t, s, "Alloc", 2.5)
 
-	got, ok := s.Gauge("Alloc")
+	got, ok := mustGauge(t, s, "Alloc")
 	if !ok || got != 2.5 {
 		t.Errorf("got (%v, %v), want (2.5, true)", got, ok)
 	}
@@ -25,19 +66,19 @@ func TestMemStorageGauge(t *testing.T) {
 func TestMemStorageCounter(t *testing.T) {
 	s := NewMemStorage()
 
-	if _, ok := s.Counter("missing"); ok {
+	if _, ok := mustCounter(t, s, "missing"); ok {
 		t.Error("expected missing counter")
 	}
 
-	if got := s.AddCounter("PollCount", 5); got != 5 {
+	if got := mustAddCounter(t, s, "PollCount", 5); got != 5 {
 		t.Errorf("got %d, want 5", got)
 	}
 
-	if got := s.AddCounter("PollCount", 7); got != 12 {
+	if got := mustAddCounter(t, s, "PollCount", 7); got != 12 {
 		t.Errorf("got %d, want 12", got)
 	}
 
-	got, ok := s.Counter("PollCount")
+	got, ok := mustCounter(t, s, "PollCount")
 	if !ok || got != 12 {
 		t.Errorf("got (%v, %v), want (12, true)", got, ok)
 	}
@@ -45,10 +86,14 @@ func TestMemStorageCounter(t *testing.T) {
 
 func TestMemStorageAll(t *testing.T) {
 	s := NewMemStorage()
-	s.SetGauge("Alloc", 1)
-	s.AddCounter("PollCount", 3)
+	mustSetGauge(t, s, "Alloc", 1)
+	mustAddCounter(t, s, "PollCount", 3)
 
-	all := s.All()
+	all, err := s.All(t.Context())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
 	if len(all) != 2 {
 		t.Fatalf("got %d metrics, want 2", len(all))
 	}
@@ -69,8 +114,8 @@ func TestMemStorageAll(t *testing.T) {
 
 func TestMemStorageRestore(t *testing.T) {
 	s := NewMemStorage()
-	s.SetGauge("Old", 1)
-	s.AddCounter("PollCount", 100)
+	mustSetGauge(t, s, "Old", 1)
+	mustAddCounter(t, s, "PollCount", 100)
 
 	err := s.Restore([]models.Metrics{
 		{ID: "LastGC", MType: models.Gauge, Value: ptrFloat(1257894000000000000)},
@@ -80,15 +125,15 @@ func TestMemStorageRestore(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, ok := s.Gauge("Old"); ok {
+	if _, ok := mustGauge(t, s, "Old"); ok {
 		t.Error("restore must replace previous contents")
 	}
 
-	if v, ok := s.Gauge("LastGC"); !ok || v != 1257894000000000000 {
+	if v, ok := mustGauge(t, s, "LastGC"); !ok || v != 1257894000000000000 {
 		t.Errorf("got gauge (%v, %v)", v, ok)
 	}
 
-	if v, ok := s.Counter("PollCount"); !ok || v != 42 {
+	if v, ok := mustCounter(t, s, "PollCount"); !ok || v != 42 {
 		t.Errorf("got counter (%v, %v), want (42, true): restore sets values, not adds", v, ok)
 	}
 }
@@ -103,13 +148,13 @@ func TestMemStorageRestoreRejectsInvalidMetrics(t *testing.T) {
 
 	for _, m := range cases {
 		s := NewMemStorage()
-		s.SetGauge("Keep", 1)
+		mustSetGauge(t, s, "Keep", 1)
 
 		if err := s.Restore([]models.Metrics{m}); err == nil {
 			t.Errorf("%+v: expected an error", m)
 		}
 
-		if _, ok := s.Gauge("Keep"); !ok {
+		if _, ok := mustGauge(t, s, "Keep"); !ok {
 			t.Errorf("%+v: failed restore must not change the storage", m)
 		}
 	}

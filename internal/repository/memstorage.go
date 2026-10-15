@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -20,41 +21,47 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
-func (s *MemStorage) SetGauge(name string, value float64) {
+func (s *MemStorage) SetGauge(_ context.Context, name string, value float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.gauges[name] = value
+
+	return nil
 }
 
-func (s *MemStorage) AddCounter(name string, delta int64) int64 {
+func (s *MemStorage) AddCounter(_ context.Context, name string, delta int64) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.counters[name] += delta
 
-	return s.counters[name]
+	return s.counters[name], nil
 }
 
-func (s *MemStorage) Gauge(name string) (float64, bool) {
+func (s *MemStorage) Gauge(_ context.Context, name string) (float64, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	v, ok := s.gauges[name]
 
-	return v, ok
+	return v, ok, nil
 }
 
-func (s *MemStorage) Counter(name string) (int64, bool) {
+func (s *MemStorage) Counter(_ context.Context, name string) (int64, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	v, ok := s.counters[name]
 
-	return v, ok
+	return v, ok, nil
 }
 
-func (s *MemStorage) All() []models.Metrics {
+func (s *MemStorage) All(_ context.Context) ([]models.Metrics, error) {
+	return s.snapshot(), nil
+}
+
+func (s *MemStorage) snapshot() []models.Metrics {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

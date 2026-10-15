@@ -1,0 +1,96 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+
+	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
+)
+
+const (
+	upsertGauge = `
+		INSERT INTO gauges (name, value) VALUES ($1, $2)
+		ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`
+
+	upsertCounter = `
+		INSERT INTO counters (name, delta) VALUES ($1, $2)
+		ON CONFLICT (name) DO UPDATE SET delta = counters.delta + EXCLUDED.delta
+		RETURNING delta`
+
+	selectGauge   = `SELECT value FROM gauges WHERE name = $1`
+	selectCounter = `SELECT delta FROM counters WHERE name = $1`
+
+	selectAll = `
+		SELECT name, 'gauge' AS type, value, NULL::BIGINT AS delta FROM gauges
+		UNION ALL
+		SELECT name, 'counter' AS type, NULL::DOUBLE PRECISION AS value, delta FROM counters`
+)
+
+func (db *DB) SetGauge(ctx context.Context, name string, value float64) error {
+	if _, err := db.pool.Exec(ctx, upsertGauge, name, value); err != nil {
+		return fmt.Errorf("upsert gauge: %w", err)
+	}
+
+	return nil
+}
+
+func (db *DB) AddCounter(ctx context.Context, name string, delta int64) (int64, error) {
+	var total int64
+	if err := db.pool.QueryRow(ctx, upsertCounter, name, delta).Scan(&total); err != nil {
+		return 0, fmt.Errorf("upsert counter: %w", err)
+	}
+
+	return total, nil
+}
+
+func (db *DB) Gauge(ctx context.Context, name string) (float64, bool, error) {
+	var value float64
+
+	err := db.pool.QueryRow(ctx, selectGauge, name).Scan(&value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+
+	if err != nil {
+		return 0, false, fmt.Errorf("select gauge: %w", err)
+	}
+
+	return value, true, nil
+}
+
+func (db *DB) Counter(ctx context.Context, name string) (int64, bool, error) {
+	var delta int64
+
+	err := db.pool.QueryRow(ctx, selectCounter, name).Scan(&delta)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+
+	if err != nil {
+		return 0, false, fmt.Errorf("select counter: %w", err)
+	}
+
+	return delta, true, nil
+}
+
+func (db *DB) All(ctx context.Context) ([]models.Metrics, error) {
+	rows, err := db.pool.Query(ctx, selectAll)
+	if err != nil {
+		return nil, fmt.Errorf("select metrics: %w", err)
+	}
+
+	all, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.Metrics, error) {
+		var m models.Metrics
+		err := row.Scan(&m.ID, &m.MType, &m.Value, &m.Delta)
+
+		return m, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read metrics: %w", err)
+	}
+
+	return all, nil
+}
