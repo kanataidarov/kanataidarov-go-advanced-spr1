@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"fmt"
 	"sync"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
@@ -70,4 +71,30 @@ func (s *MemStorage) All() []models.Metrics {
 	}
 
 	return all
+}
+
+func (s *MemStorage) Restore(metrics []models.Metrics) error {
+	gauges := make(map[string]float64, len(metrics))
+	counters := make(map[string]int64, len(metrics))
+
+	for _, m := range metrics {
+		switch {
+		case m.ID == "":
+			return fmt.Errorf("metric of type %q without name", m.MType)
+		case m.MType == models.Gauge && m.Value != nil:
+			gauges[m.ID] = *m.Value
+		case m.MType == models.Counter && m.Delta != nil:
+			counters[m.ID] = *m.Delta
+		default:
+			return fmt.Errorf("invalid metric %q of type %q", m.ID, m.MType)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.gauges = gauges
+	s.counters = counters
+
+	return nil
 }

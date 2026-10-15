@@ -1,0 +1,133 @@
+package repository
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+
+	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
+)
+
+func loadMap(t *testing.T, store *FileStore) map[string]models.Metrics {
+	t.Helper()
+
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	out := make(map[string]models.Metrics, len(loaded))
+	for _, m := range loaded {
+		out[m.ID] = m
+	}
+
+	return out
+}
+
+func TestPersistentStorageSyncMode(t *testing.T) {
+	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
+	p := NewPersistentStorage(NewMemStorage(), file, true, zap.NewNop())
+
+	p.SetGauge("Alloc", 12.5)
+
+	if got := loadMap(t, file)["Alloc"]; got.Value == nil || *got.Value != 12.5 {
+		t.Fatalf("gauge was not saved synchronously: %+v", got)
+	}
+
+	if total := p.AddCounter("PollCount", 3); total != 3 {
+		t.Errorf("got total %d, want 3", total)
+	}
+
+	p.AddCounter("PollCount", 4)
+
+	if got := loadMap(t, file)["PollCount"]; got.Delta == nil || *got.Delta != 7 {
+		t.Errorf("counter was not saved synchronously: %+v", got)
+	}
+}
+
+func TestPersistentStorageSyncModeConcurrentUpdates(t *testing.T) {
+	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
+	p := NewPersistentStorage(NewMemStorage(), file, true, zap.NewNop())
+
+	var wg sync.WaitGroup
+
+	for i := range 20 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+			p.SetGauge(fmt.Sprintf("g%d", i), float64(i))
+			p.AddCounter("total", 1)
+		}()
+	}
+
+	wg.Wait()
+
+	saved := loadMap(t, file)
+	if len(saved) != 21 {
+		t.Errorf("got %d saved metrics, want 21: the last save must contain every update", len(saved))
+	}
+
+	if got := saved["total"]; got.Delta == nil || *got.Delta != 20 {
+		t.Errorf("got total %+v, want 20", got)
+	}
+}
+
+func TestPersistentStoragePeriodicMode(t *testing.T) {
+	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
+	p := NewPersistentStorage(NewMemStorage(), file, false, zap.NewNop())
+
+	p.SetGauge("Alloc", 1)
+
+	if saved := loadMap(t, file); len(saved) != 0 {
+		t.Fatalf("periodic mode must not save on update, got %+v", saved)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		p.Run(ctx, 10*time.Millisecond)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for len(loadMap(t, file)) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop after context cancellation")
+	}
+
+	if got := loadMap(t, file)["Alloc"]; got.Value == nil || *got.Value != 1 {
+		t.Errorf("metric was not saved by Run: %+v", got)
+	}
+}
+
+func TestPersistentStorageLogsSaveErrors(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	file := NewFileStore(filepath.Join(t.TempDir(), "no-such-dir", "metrics.json"))
+	p := NewPersistentStorage(NewMemStorage(), file, true, zap.New(core))
+
+	p.SetGauge("Alloc", 1)
+
+	if v, ok := p.Gauge("Alloc"); !ok || v != 1 {
+		t.Errorf("value must stay in memory even if saving fails, got (%v, %v)", v, ok)
+	}
+
+	entries := logs.All()
+	if len(entries) != 1 || entries[0].Level != zap.ErrorLevel {
+		t.Fatalf("got log entries %+v, want one error", entries)
+	}
+}

@@ -2,8 +2,9 @@ package agent
 
 import (
 	"context"
-	"log"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 )
@@ -11,12 +12,14 @@ import (
 type Agent struct {
 	collector *Collector
 	sender    *Sender
+	log       *zap.Logger
 }
 
-func New(cfg config.AgentConfig) *Agent {
+func New(cfg config.AgentConfig, log *zap.Logger) *Agent {
 	return &Agent{
 		collector: NewCollector(cfg.Collector),
 		sender:    NewSender(cfg.Sender),
+		log:       log,
 	}
 }
 
@@ -49,7 +52,7 @@ func (a *Agent) Report(ctx context.Context) {
 
 	for _, metric := range a.collector.Snapshot() {
 		if err := a.sender.Send(ctx, metric); err != nil {
-			log.Printf("cannot report metric %s: %v", metric.ID, err)
+			a.log.Error("cannot report metric", zap.String("metric", metric.ID), zap.Error(err))
 
 			failed = true
 
