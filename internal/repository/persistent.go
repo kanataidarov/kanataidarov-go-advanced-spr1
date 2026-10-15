@@ -10,8 +10,6 @@ import (
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 )
 
-// PersistentStorage wraps MemStorage without embedding it: every method is
-// delegated explicitly, so a new storage method cannot silently bypass saving.
 type PersistentStorage struct {
 	mem *MemStorage
 
