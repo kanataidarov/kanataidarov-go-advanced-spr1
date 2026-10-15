@@ -371,3 +371,44 @@ func TestMetricsHandlerJSONAndURLShareStorage(t *testing.T) {
 		t.Errorf("got %q, want 7", rec.Body.String())
 	}
 }
+
+func TestMetricsHandlerUpdatesBatch(t *testing.T) {
+	router, storage := newTestRouter()
+	seedStorage(t, storage)
+
+	rec := postJSON(t, router, "/updates/", `[
+		{"id":"PollCount","type":"counter","delta":3},
+		{"id":"Alloc","type":"gauge","value":1},
+		{"id":"PollCount","type":"counter","delta":4},
+		{"id":"Alloc","type":"gauge","value":2}
+	]`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	if v, ok := storedCounter(t, storage, "PollCount"); !ok || v != 14 {
+		t.Errorf("got counter (%v, %v), want (14, true): 7 + 3 + 4", v, ok)
+	}
+
+	if v, ok := storedGauge(t, storage, "Alloc"); !ok || v != 2 {
+		t.Errorf("got gauge (%v, %v), want (2, true): the last value wins", v, ok)
+	}
+
+	rec = postJSON(t, router, "/value/", `{"id":"PollCount","type":"counter"}`)
+	if got := decodeMetric(t, rec); got.Delta == nil || *got.Delta != 14 {
+		t.Errorf("POST /value/: got %+v, want delta 14", got)
+	}
+}
+
+func TestMetricsHandlerUpdatesInvalidBatchChangesNothing(t *testing.T) {
+	router, storage := newTestRouter()
+
+	rec := postJSON(t, router, "/updates/", `[{"id":"Alloc","type":"gauge","value":1},{"id":"PollCount","type":"counter"}]`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want 400", rec.Code)
+	}
+
+	if n := storedCount(t, storage); n != 0 {
+		t.Errorf("got %d stored metrics, want 0: a rejected batch must not be saved partially", n)
+	}
+}

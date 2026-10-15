@@ -139,3 +139,25 @@ func TestPersistentStorageLogsSaveErrors(t *testing.T) {
 		t.Fatalf("got log entries %+v, want one error", entries)
 	}
 }
+
+func TestPersistentStorageSyncModeSavesBatch(t *testing.T) {
+	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
+	p := NewPersistentStorage(NewMemStorage(), file, true, zap.NewNop())
+
+	err := p.UpdateMetrics(t.Context(), []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1.5)},
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(3)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	saved := loadMap(t, file)
+	if got := saved["Alloc"]; got.Value == nil || *got.Value != 1.5 {
+		t.Errorf("gauge was not saved: %+v", got)
+	}
+
+	if got := saved["PollCount"]; got.Delta == nil || *got.Delta != 3 {
+		t.Errorf("counter was not saved: %+v", got)
+	}
+}

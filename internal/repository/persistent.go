@@ -50,6 +50,16 @@ func (p *PersistentStorage) AddCounter(ctx context.Context, name string, delta i
 	return total, nil
 }
 
+func (p *PersistentStorage) UpdateMetrics(ctx context.Context, metrics []models.Metrics) error {
+	if err := p.mem.UpdateMetrics(ctx, metrics); err != nil {
+		return err
+	}
+
+	p.saveIfSync()
+
+	return nil
+}
+
 func (p *PersistentStorage) Gauge(ctx context.Context, name string) (float64, bool, error) {
 	return p.mem.Gauge(ctx, name)
 }

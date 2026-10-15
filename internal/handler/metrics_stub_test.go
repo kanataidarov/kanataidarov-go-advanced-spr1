@@ -25,6 +25,7 @@ type stubService struct {
 	valueErr          error
 	all               []models.Metrics
 	allErr            error
+	batches           [][]models.Metrics
 }
 
 func (s *stubService) Update(_ context.Context, mType, name, rawValue string) error {
@@ -45,6 +46,12 @@ func (s *stubService) UpdateMetric(_ context.Context, m models.Metrics) (models.
 
 func (s *stubService) Metric(_ context.Context, _, _ string) (models.Metrics, error) {
 	return s.metric, s.valueErr
+}
+
+func (s *stubService) UpdateMetrics(_ context.Context, metrics []models.Metrics) error {
+	s.batches = append(s.batches, metrics)
+
+	return s.updateErr
 }
 
 func (s *stubService) All(_ context.Context) ([]models.Metrics, error) {
@@ -268,5 +275,54 @@ func TestHandlerIndexStorageError(t *testing.T) {
 
 	if n := logs.FilterLevelExact(zap.ErrorLevel).Len(); n != 1 {
 		t.Errorf("got %d error log entries, want 1", n)
+	}
+}
+
+func TestHandlerUpdatesPassesBatchToService(t *testing.T) {
+	stub := &stubService{}
+	router := NewMetricsHandler(stub, zap.NewNop()).Router()
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/updates/",
+		strings.NewReader(`[{"id":"Alloc","type":"gauge","value":1.5},{"id":"PollCount","type":"counter","delta":2}]`)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+
+	want := [][]models.Metrics{{
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1.5)},
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(2)},
+	}}
+	if !reflect.DeepEqual(stub.batches, want) {
+		t.Errorf("got batches %+v, want %+v", stub.batches, want)
+	}
+}
+
+func TestHandlerUpdatesMapsErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		err  error
+		want int
+	}{
+		{name: "malformed JSON", body: `[{"id":"Alloc"`, want: http.StatusBadRequest},
+		{name: "object instead of list", body: `{"id":"Alloc","type":"gauge","value":1}`, want: http.StatusBadRequest},
+		{name: "empty batch", body: `[]`, err: service.ErrEmptyBatch, want: http.StatusBadRequest},
+		{name: "invalid metric", body: `[{"id":"Alloc","type":"gauge"}]`, err: service.ErrInvalidValue, want: http.StatusBadRequest},
+		{name: "storage failure", body: `[{"id":"Alloc","type":"gauge","value":1}]`, err: errors.New("db down"), want: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := NewMetricsHandler(&stubService{updateErr: tt.err}, zap.NewNop()).Router()
+
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader(tt.body)))
+
+			if rec.Code != tt.want {
+				t.Errorf("got status %d, want %d", rec.Code, tt.want)
+			}
+		})
 	}
 }

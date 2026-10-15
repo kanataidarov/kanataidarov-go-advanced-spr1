@@ -36,18 +36,22 @@ func (s *Sender) ReportInterval() time.Duration {
 	return s.reportInterval
 }
 
-func (s *Sender) Send(ctx context.Context, metric models.Metrics) error {
-	body, err := easyjson.Marshal(metric)
+func (s *Sender) SendBatch(ctx context.Context, metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+
+	body, err := easyjson.Marshal(models.MetricsList(metrics))
 	if err != nil {
-		return fmt.Errorf("cannot encode metric %s: %w", metric.ID, err)
+		return fmt.Errorf("cannot encode metrics: %w", err)
 	}
 
 	compressed, err := gzipBytes(body)
 	if err != nil {
-		return fmt.Errorf("cannot compress metric %s: %w", metric.ID, err)
+		return fmt.Errorf("cannot compress metrics: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/update/", bytes.NewReader(compressed))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/updates/", bytes.NewReader(compressed))
 	if err != nil {
 		return err
 	}

@@ -159,3 +159,41 @@ func TestMemStorageRestoreRejectsInvalidMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestMemStorageUpdateMetrics(t *testing.T) {
+	s := NewMemStorage()
+	mustAddCounter(t, s, "PollCount", 10)
+
+	err := s.UpdateMetrics(t.Context(), []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1)},
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(5)},
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(2)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if v, ok := mustGauge(t, s, "Alloc"); !ok || v != 2 {
+		t.Errorf("got gauge (%v, %v), want (2, true)", v, ok)
+	}
+
+	if v, ok := mustCounter(t, s, "PollCount"); !ok || v != 15 {
+		t.Errorf("got counter (%v, %v), want (15, true)", v, ok)
+	}
+}
+
+func TestMemStorageUpdateMetricsIsAtomic(t *testing.T) {
+	s := NewMemStorage()
+
+	err := s.UpdateMetrics(t.Context(), []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1)},
+		{ID: "Broken", MType: models.Counter},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an invalid metric")
+	}
+
+	if _, ok := mustGauge(t, s, "Alloc"); ok {
+		t.Error("a failed batch must not change the storage")
+	}
+}

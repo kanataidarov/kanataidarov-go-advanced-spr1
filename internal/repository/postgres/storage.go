@@ -94,3 +94,35 @@ func (db *DB) All(ctx context.Context) ([]models.Metrics, error) {
 
 	return all, nil
 }
+
+func (db *DB) UpdateMetrics(ctx context.Context, metrics []models.Metrics) error {
+	batch := &pgx.Batch{}
+
+	for _, m := range metrics {
+		switch {
+		case m.MType == models.Gauge && m.Value != nil:
+			batch.Queue(upsertGauge, m.ID, *m.Value)
+		case m.MType == models.Counter && m.Delta != nil:
+			batch.Queue(upsertCounter, m.ID, *m.Delta)
+		default:
+			return fmt.Errorf("invalid metric %q of type %q", m.ID, m.MType)
+		}
+	}
+
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return fmt.Errorf("update metrics: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return nil
+}

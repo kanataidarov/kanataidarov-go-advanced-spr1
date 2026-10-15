@@ -18,7 +18,77 @@ var (
 	_ easyjson.Marshaler
 )
 
-func easyjsonDecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(in *jlexer.Lexer, out *Metrics) {
+func easyjson2220f231DecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(in *jlexer.Lexer, out *MetricsList) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		in.Skip()
+		*out = nil
+	} else {
+		in.Delim('[')
+		if *out == nil {
+			if !in.IsDelim(']') {
+				*out = make(MetricsList, 0, 1)
+			} else {
+				*out = MetricsList{}
+			}
+		} else {
+			*out = (*out)[:0]
+		}
+		for !in.IsDelim(']') {
+			var v1 Metrics
+			if in.IsNull() {
+				in.Skip()
+			} else {
+				(v1).UnmarshalEasyJSON(in)
+			}
+			*out = append(*out, v1)
+			in.WantComma()
+		}
+		in.Delim(']')
+	}
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+func easyjson2220f231EncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(out *jwriter.Writer, in MetricsList) {
+	if in == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
+		out.RawString("null")
+	} else {
+		out.RawByte('[')
+		for v2, v3 := range in {
+			if v2 > 0 {
+				out.RawByte(',')
+			}
+			(v3).MarshalEasyJSON(out)
+		}
+		out.RawByte(']')
+	}
+}
+
+// MarshalJSON supports json.Marshaler interface
+func (v MetricsList) MarshalJSON() ([]byte, error) {
+	w := jwriter.Writer{}
+	easyjson2220f231EncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(&w, v)
+	return w.Buffer.BuildBytes(), w.Error
+}
+
+// MarshalEasyJSON supports easyjson.Marshaler interface
+func (v MetricsList) MarshalEasyJSON(w *jwriter.Writer) {
+	easyjson2220f231EncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(w, v)
+}
+
+// UnmarshalJSON supports json.Unmarshaler interface
+func (v *MetricsList) UnmarshalJSON(data []byte) error {
+	r := jlexer.Lexer{Data: data}
+	easyjson2220f231DecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(&r, v)
+	return r.Error()
+}
+
+// UnmarshalEasyJSON supports easyjson.Unmarshaler interface
+func (v *MetricsList) UnmarshalEasyJSON(l *jlexer.Lexer) {
+	easyjson2220f231DecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(l, v)
+}
+func easyjson2220f231DecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel1(in *jlexer.Lexer, out *Metrics) {
 	isTopLevel := in.IsStart()
 	if in.IsNull() {
 		if isTopLevel {
@@ -31,16 +101,19 @@ func easyjsonDecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(
 	for !in.IsDelim('}') {
 		key := in.UnsafeFieldName(false)
 		in.WantColon()
-		if in.IsNull() {
-			in.Skip()
-			in.WantComma()
-			continue
-		}
 		switch key {
 		case "id":
-			out.ID = string(in.String())
+			if in.IsNull() {
+				in.Skip()
+			} else {
+				out.ID = string(in.String())
+			}
 		case "type":
-			out.MType = string(in.String())
+			if in.IsNull() {
+				in.Skip()
+			} else {
+				out.MType = string(in.String())
+			}
 		case "delta":
 			if in.IsNull() {
 				in.Skip()
@@ -49,7 +122,11 @@ func easyjsonDecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(
 				if out.Delta == nil {
 					out.Delta = new(int64)
 				}
-				*out.Delta = int64(in.Int64())
+				if in.IsNull() {
+					in.Skip()
+				} else {
+					*out.Delta = int64(in.Int64())
+				}
 			}
 		case "value":
 			if in.IsNull() {
@@ -59,10 +136,18 @@ func easyjsonDecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(
 				if out.Value == nil {
 					out.Value = new(float64)
 				}
-				*out.Value = float64(in.Float64())
+				if in.IsNull() {
+					in.Skip()
+				} else {
+					*out.Value = float64(in.Float64())
+				}
 			}
 		case "hash":
-			out.Hash = string(in.String())
+			if in.IsNull() {
+				in.Skip()
+			} else {
+				out.Hash = string(in.String())
+			}
 		default:
 			in.SkipRecursive()
 		}
@@ -73,7 +158,7 @@ func easyjsonDecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(
 		in.Consumed()
 	}
 }
-func easyjsonEncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(out *jwriter.Writer, in Metrics) {
+func easyjson2220f231EncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel1(out *jwriter.Writer, in Metrics) {
 	out.RawByte('{')
 	first := true
 	_ = first
@@ -108,23 +193,23 @@ func easyjsonEncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(
 // MarshalJSON supports json.Marshaler interface
 func (v Metrics) MarshalJSON() ([]byte, error) {
 	w := jwriter.Writer{}
-	easyjsonEncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(&w, v)
+	easyjson2220f231EncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel1(&w, v)
 	return w.Buffer.BuildBytes(), w.Error
 }
 
 // MarshalEasyJSON supports easyjson.Marshaler interface
 func (v Metrics) MarshalEasyJSON(w *jwriter.Writer) {
-	easyjsonEncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(w, v)
+	easyjson2220f231EncodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel1(w, v)
 }
 
 // UnmarshalJSON supports json.Unmarshaler interface
 func (v *Metrics) UnmarshalJSON(data []byte) error {
 	r := jlexer.Lexer{Data: data}
-	easyjsonDecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(&r, v)
+	easyjson2220f231DecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel1(&r, v)
 	return r.Error()
 }
 
 // UnmarshalEasyJSON supports easyjson.Unmarshaler interface
 func (v *Metrics) UnmarshalEasyJSON(l *jlexer.Lexer) {
-	easyjsonDecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel(l, v)
+	easyjson2220f231DecodeGithubComKanataidarovKanataidarovGoAdvancedSpr1InternalModel1(l, v)
 }

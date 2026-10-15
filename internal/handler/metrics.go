@@ -48,6 +48,7 @@ type MetricsService interface {
 	UpdateMetric(ctx context.Context, m models.Metrics) (models.Metrics, error)
 	Metric(ctx context.Context, mType, name string) (models.Metrics, error)
 	All(ctx context.Context) ([]models.Metrics, error)
+	UpdateMetrics(ctx context.Context, metrics []models.Metrics) error
 }
 
 type Pinger interface {
@@ -87,6 +88,7 @@ func (h *MetricsHandler) Router() http.Handler {
 
 	r.Get("/", h.index)
 	r.Get("/ping", h.ping)
+	r.Post("/updates", h.updatesJSON)
 
 	r.Route("/update", func(r chi.Router) {
 		r.Post("/", h.updateJSON)
@@ -149,6 +151,23 @@ func (h *MetricsHandler) updateJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *MetricsHandler) updatesJSON(w http.ResponseWriter, r *http.Request) {
+	var req models.MetricsList
+	if err := easyjson.UnmarshalFromReader(r.Body, &req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+
+		return
+	}
+
+	if err := h.metrics.UpdateMetrics(r.Context(), req); err != nil {
+		h.writeServiceError(w, err)
+
+		return
+	}
+
+	writePlain(w, http.StatusOK, "metrics saved")
 }
 
 func (h *MetricsHandler) valueJSON(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +254,7 @@ func (h *MetricsHandler) writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrEmptyName), errors.Is(err, service.ErrNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
-	case errors.Is(err, service.ErrUnknownType), errors.Is(err, service.ErrInvalidValue):
+	case errors.Is(err, service.ErrUnknownType), errors.Is(err, service.ErrInvalidValue), errors.Is(err, service.ErrEmptyBatch):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		h.log.Error("internal error while handling metrics request", zap.Error(err))

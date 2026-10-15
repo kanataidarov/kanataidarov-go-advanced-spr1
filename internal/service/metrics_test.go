@@ -14,6 +14,7 @@ type mockStorage struct {
 	gauges   map[string]float64
 	counters map[string]int64
 	err      error
+	batches  [][]models.Metrics
 }
 
 func newMockStorage() *mockStorage {
@@ -53,6 +54,16 @@ func (m *mockStorage) Counter(_ context.Context, name string) (int64, bool, erro
 }
 
 func (m *mockStorage) All(_ context.Context) ([]models.Metrics, error) { return nil, m.err }
+
+func (m *mockStorage) UpdateMetrics(_ context.Context, metrics []models.Metrics) error {
+	if m.err != nil {
+		return m.err
+	}
+
+	m.batches = append(m.batches, metrics)
+
+	return nil
+}
 
 var (
 	_ Storage = (*mockStorage)(nil)
@@ -294,6 +305,7 @@ func TestMetricsServicePropagatesStorageErrors(t *testing.T) {
 	_, checks["Metric"] = s.Metric(ctx, models.Gauge, "Alloc")
 	_, checks["Value"] = s.Value(ctx, models.Counter, "PollCount")
 	_, checks["All"] = s.All(ctx)
+	checks["UpdateMetrics"] = s.UpdateMetrics(ctx, []models.Metrics{{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1)}})
 
 	for name, err := range checks {
 		if !errors.Is(err, errDB) {
@@ -305,5 +317,61 @@ func TestMetricsServicePropagatesStorageErrors(t *testing.T) {
 				t.Errorf("%s: storage error must not look like %v", name, known)
 			}
 		}
+	}
+}
+
+func TestMetricsServiceUpdateMetricsMergesAndSortsBatch(t *testing.T) {
+	storage := newMockStorage()
+
+	err := NewMetricsService(storage).UpdateMetrics(t.Context(), []models.Metrics{
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(3)},
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1)},
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(4)},
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(2)},
+		{ID: "Alloc", MType: models.Counter, Delta: ptrInt(1)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := [][]models.Metrics{{
+		{ID: "Alloc", MType: models.Counter, Delta: ptrInt(1)},
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(7)},
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(2)},
+	}}
+	if !reflect.DeepEqual(storage.batches, want) {
+		t.Errorf("got batches %+v, want %+v", storage.batches, want)
+	}
+}
+
+func TestMetricsServiceUpdateMetricsRejectsInvalidBatch(t *testing.T) {
+	valid := models.Metrics{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1)}
+
+	tests := []struct {
+		name    string
+		batch   []models.Metrics
+		wantErr error
+	}{
+		{name: "nil", batch: nil, wantErr: ErrEmptyBatch},
+		{name: "empty", batch: []models.Metrics{}, wantErr: ErrEmptyBatch},
+		{name: "empty name", batch: []models.Metrics{valid, {MType: models.Gauge, Value: ptrFloat(1)}}, wantErr: ErrEmptyName},
+		{name: "unknown type", batch: []models.Metrics{valid, {ID: "x", MType: "histogram", Value: ptrFloat(1)}}, wantErr: ErrUnknownType},
+		{name: "gauge without value", batch: []models.Metrics{valid, {ID: "x", MType: models.Gauge, Delta: ptrInt(1)}}, wantErr: ErrInvalidValue},
+		{name: "counter without delta", batch: []models.Metrics{valid, {ID: "x", MType: models.Counter}}, wantErr: ErrInvalidValue},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := newMockStorage()
+
+			err := NewMetricsService(storage).UpdateMetrics(t.Context(), tt.batch)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("got error %v, want %v", err, tt.wantErr)
+			}
+
+			if len(storage.batches) != 0 {
+				t.Error("invalid batch must not reach the storage")
+			}
+		})
 	}
 }

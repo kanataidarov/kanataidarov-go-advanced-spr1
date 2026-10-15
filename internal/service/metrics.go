@@ -1,9 +1,11 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
@@ -14,6 +16,7 @@ var (
 	ErrUnknownType  = errors.New("unknown metric type")
 	ErrInvalidValue = errors.New("invalid metric value")
 	ErrNotFound     = errors.New("metric not found")
+	ErrEmptyBatch   = errors.New("metrics batch is empty")
 )
 
 type Storage interface {
@@ -22,6 +25,7 @@ type Storage interface {
 	Gauge(ctx context.Context, name string) (float64, bool, error)
 	Counter(ctx context.Context, name string) (int64, bool, error)
 	All(ctx context.Context) ([]models.Metrics, error)
+	UpdateMetrics(ctx context.Context, metrics []models.Metrics) error
 }
 
 type MetricsService struct {
@@ -103,6 +107,71 @@ func (s *MetricsService) UpdateMetric(ctx context.Context, m models.Metrics) (mo
 	default:
 		return models.Metrics{}, ErrUnknownType
 	}
+}
+
+func (s *MetricsService) UpdateMetrics(ctx context.Context, metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return ErrEmptyBatch
+	}
+
+	for i, m := range metrics {
+		if err := validateMetric(m); err != nil {
+			return fmt.Errorf("metric #%d %q: %w", i, m.ID, err)
+		}
+	}
+
+	if err := s.storage.UpdateMetrics(ctx, mergeBatch(metrics)); err != nil {
+		return fmt.Errorf("cannot save metrics batch: %w", err)
+	}
+
+	return nil
+}
+
+func validateMetric(m models.Metrics) error {
+	switch {
+	case m.ID == "":
+		return ErrEmptyName
+	case m.MType == models.Gauge && m.Value == nil, m.MType == models.Counter && m.Delta == nil:
+		return ErrInvalidValue
+	case m.MType != models.Gauge && m.MType != models.Counter:
+		return ErrUnknownType
+	default:
+		return nil
+	}
+}
+
+func mergeBatch(metrics []models.Metrics) []models.Metrics {
+	type key struct{ mType, id string }
+
+	merged := make(map[key]models.Metrics, len(metrics))
+
+	for _, m := range metrics {
+		k := key{mType: m.MType, id: m.ID}
+
+		switch m.MType {
+		case models.Gauge:
+			value := *m.Value
+			merged[k] = models.Metrics{ID: m.ID, MType: m.MType, Value: &value}
+		case models.Counter:
+			delta := *m.Delta
+			if prev, ok := merged[k]; ok {
+				delta += *prev.Delta
+			}
+
+			merged[k] = models.Metrics{ID: m.ID, MType: m.MType, Delta: &delta}
+		}
+	}
+
+	out := make([]models.Metrics, 0, len(merged))
+	for _, m := range merged {
+		out = append(out, m)
+	}
+
+	slices.SortFunc(out, func(a, b models.Metrics) int {
+		return cmp.Or(cmp.Compare(a.MType, b.MType), cmp.Compare(a.ID, b.ID))
+	})
+
+	return out
 }
 
 func (s *MetricsService) Metric(ctx context.Context, mType, name string) (models.Metrics, error) {

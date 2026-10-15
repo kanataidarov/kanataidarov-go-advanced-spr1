@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"testing"
@@ -191,3 +192,88 @@ func TestStorageAll(t *testing.T) {
 		}
 	}
 }
+
+func TestStorageUpdateMetrics(t *testing.T) {
+	db := newTestDB(t)
+	ctx := t.Context()
+
+	if _, err := db.AddCounter(ctx, "PollCount", 10); err != nil {
+		t.Fatal(err)
+	}
+
+	err := db.UpdateMetrics(ctx, []models.Metrics{
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(5)},
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1.5)},
+	})
+	if err != nil {
+		t.Fatalf("update metrics: %v", err)
+	}
+
+	if v, ok, err := db.Counter(ctx, "PollCount"); err != nil || !ok || v != 15 {
+		t.Errorf("got counter (%v, %v, %v), want (15, true, nil)", v, ok, err)
+	}
+
+	if v, ok, err := db.Gauge(ctx, "Alloc"); err != nil || !ok || v != 1.5 {
+		t.Errorf("got gauge (%v, %v, %v), want (1.5, true, nil)", v, ok, err)
+	}
+}
+
+func TestStorageUpdateMetricsRollsBackOnError(t *testing.T) {
+	db := newTestDB(t)
+	ctx := t.Context()
+
+	if _, err := db.AddCounter(ctx, "Big", math.MaxInt64); err != nil {
+		t.Fatal(err)
+	}
+
+	err := db.UpdateMetrics(ctx, []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1)},
+		{ID: "Big", MType: models.Counter, Delta: ptrInt(1)},
+	})
+	if err == nil {
+		t.Fatal("expected an overflow error from the database")
+	}
+
+	if _, ok, err := db.Gauge(ctx, "Alloc"); err != nil || ok {
+		t.Errorf("got (ok=%v, err=%v): a failed batch must not be saved partially", ok, err)
+	}
+
+	if v, _, err := db.Counter(ctx, "Big"); err != nil || v != math.MaxInt64 {
+		t.Errorf("got (%d, %v): counter must keep its value after rollback", v, err)
+	}
+}
+
+func TestStorageUpdateMetricsConcurrentBatches(t *testing.T) {
+	db := newTestDB(t)
+
+	batch := []models.Metrics{
+		{ID: "A", MType: models.Counter, Delta: ptrInt(1)},
+		{ID: "B", MType: models.Counter, Delta: ptrInt(2)},
+		{ID: "C", MType: models.Gauge, Value: ptrFloat(3)},
+	}
+
+	var wg sync.WaitGroup
+
+	for range 20 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			if err := db.UpdateMetrics(context.Background(), batch); err != nil {
+				t.Errorf("update metrics: %v", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	for name, want := range map[string]int64{"A": 20, "B": 40} {
+		if v, _, err := db.Counter(t.Context(), name); err != nil || v != want {
+			t.Errorf("counter %s: got (%d, %v), want %d", name, v, err, want)
+		}
+	}
+}
+
+func ptrFloat(v float64) *float64 { return &v }
+func ptrInt(v int64) *int64       { return &v }

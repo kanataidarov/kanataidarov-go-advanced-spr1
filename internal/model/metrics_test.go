@@ -112,3 +112,33 @@ func TestMetricsUnmarshalEasyJSONRejectsInvalidInput(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsListEasyJSON(t *testing.T) {
+	list := MetricsList{
+		{ID: "Alloc", MType: Gauge, Value: ptrFloat(1.5)},
+		{ID: "PollCount", MType: Counter, Delta: ptrInt(3)},
+	}
+
+	data, err := easyjson.Marshal(list)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	want := `[{"id":"Alloc","type":"gauge","value":1.5},{"id":"PollCount","type":"counter","delta":3}]`
+	if string(data) != want {
+		t.Errorf("got %s, want %s", data, want)
+	}
+
+	var decoded MetricsList
+	if err := easyjson.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if !reflect.DeepEqual(decoded, list) {
+		t.Errorf("got %+v, want %+v", decoded, list)
+	}
+
+	if err := easyjson.Unmarshal([]byte(`{"id":"Alloc"}`), &decoded); err == nil {
+		t.Error("an object must not decode as a list")
+	}
+}
