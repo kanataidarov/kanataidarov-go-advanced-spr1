@@ -119,7 +119,9 @@ func TestIsConnectionErrorOnRefusedConnection(t *testing.T) {
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	_, err = http.Get("http://" + addr)
+	s, _ := newTestSender(t, addr, nil)
+
+	err = s.post(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected a connection error")
 	}

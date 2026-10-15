@@ -244,17 +244,14 @@ func TestSenderSkipsEmptyBatch(t *testing.T) {
 }
 
 func TestAgentRunStopsOnContextCancel(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	srv, requests := newRecordingServer(t)
 
 	a := New(config.AgentConfig{
 		Collector: config.CollectorConfig{PollInterval: 10 * time.Millisecond},
 		Sender:    config.SenderConfig{Address: srv.URL, ReportInterval: 20 * time.Millisecond},
 	}, zap.NewNop())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := make(chan struct{})
@@ -264,13 +261,24 @@ func TestAgentRunStopsOnContextCancel(t *testing.T) {
 		close(done)
 	}()
 
+	deadline := time.After(5 * time.Second)
+	for len(requests()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("agent did not report metrics while running")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Run did not stop after context cancellation")
 	}
 
-	if metric := snapshotMap(t, a.collector.Snapshot())[pollCountMetric]; metric.Delta == nil || *metric.Delta == 0 {
+	if metric := snapshotMap(t, requests()[0].metrics)[pollCountMetric]; metric.Delta == nil || *metric.Delta == 0 {
 		t.Error("agent did not poll metrics while running")
 	}
 }
