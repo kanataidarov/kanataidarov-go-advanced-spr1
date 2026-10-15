@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -203,5 +204,52 @@ func TestHandlerDoesNotLogClientErrors(t *testing.T) {
 
 	if n := len(logs.All()); n != 0 {
 		t.Errorf("got %d log entries, want 0: client errors are logged by the request middleware", n)
+	}
+}
+
+type stubPinger struct {
+	err   error
+	calls int
+}
+
+func (p *stubPinger) Ping(_ context.Context) error {
+	p.calls++
+
+	return p.err
+}
+
+func TestPing(t *testing.T) {
+	tests := []struct {
+		name      string
+		pinger    *stubPinger
+		wantCode  int
+		wantCalls int
+	}{
+		{name: "database is reachable", pinger: &stubPinger{}, wantCode: http.StatusOK, wantCalls: 1},
+		{name: "database is unreachable", pinger: &stubPinger{err: errors.New("connection refused")}, wantCode: http.StatusInternalServerError, wantCalls: 1},
+		{name: "database is not configured", wantCode: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var opts []Option
+			if tt.pinger != nil {
+				opts = append(opts, WithPinger(tt.pinger))
+			}
+
+			router := NewMetricsHandler(&stubService{}, zap.NewNop(), opts...).Router()
+
+			req := httptest.NewRequest(http.MethodGet, "/ping", http.NoBody)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Errorf("got status %d, want %d", rec.Code, tt.wantCode)
+			}
+
+			if tt.pinger != nil && tt.pinger.calls != tt.wantCalls {
+				t.Errorf("got %d Ping calls, want %d", tt.pinger.calls, tt.wantCalls)
+			}
+		})
 	}
 }

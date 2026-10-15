@@ -2,10 +2,12 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"html/template"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -48,13 +50,34 @@ type MetricsService interface {
 	All() []models.Metrics
 }
 
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+const pingTimeout = 3 * time.Second
+
 type MetricsHandler struct {
 	metrics MetricsService
+	db      Pinger
 	log     *zap.Logger
 }
 
-func NewMetricsHandler(metrics MetricsService, log *zap.Logger) *MetricsHandler {
-	return &MetricsHandler{metrics: metrics, log: log}
+type Option func(*MetricsHandler)
+
+func WithPinger(db Pinger) Option {
+	return func(h *MetricsHandler) {
+		h.db = db
+	}
+}
+
+func NewMetricsHandler(metrics MetricsService, log *zap.Logger, opts ...Option) *MetricsHandler {
+	h := &MetricsHandler{metrics: metrics, log: log}
+
+	for _, opt := range opts {
+		opt(h)
+	}
+
+	return h
 }
 
 func (h *MetricsHandler) Router() http.Handler {
@@ -63,6 +86,7 @@ func (h *MetricsHandler) Router() http.Handler {
 	r.Use(middleware.StripSlashes)
 
 	r.Get("/", h.index)
+	r.Get("/ping", h.ping)
 
 	r.Route("/update", func(r chi.Router) {
 		r.Post("/", h.updateJSON)
@@ -180,6 +204,26 @@ func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
 	if _, err := w.Write(buf.Bytes()); err != nil {
 		return
 	}
+}
+
+func (h *MetricsHandler) ping(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		http.Error(w, "database is not configured", http.StatusInternalServerError)
+
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), pingTimeout)
+	defer cancel()
+
+	if err := h.db.Ping(ctx); err != nil {
+		h.log.Warn("database ping failed", zap.Error(err))
+		http.Error(w, "database is unavailable", http.StatusInternalServerError)
+
+		return
+	}
+
+	writePlain(w, http.StatusOK, "OK")
 }
 
 func (h *MetricsHandler) writeServiceError(w http.ResponseWriter, err error) {

@@ -19,6 +19,7 @@ import (
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/handler"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/logger"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/repository"
+	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/repository/postgres"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/service"
 )
 
@@ -71,8 +72,20 @@ func run(zlog *zap.Logger) error {
 		storage = persistent
 	}
 
+	var handlerOpts []handler.Option
+
+	if cfg.DatabaseDSN != "" {
+		db, err := postgres.New(ctx, cfg.DatabaseDSN)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		handlerOpts = append(handlerOpts, handler.WithPinger(db))
+	}
+
 	metrics := service.NewMetricsService(storage)
-	metricsHandler := handler.NewMetricsHandler(metrics, zlog)
+	metricsHandler := handler.NewMetricsHandler(metrics, zlog, handlerOpts...)
 
 	srv := &http.Server{
 		Addr:              cfg.Address,
@@ -99,6 +112,7 @@ func run(zlog *zap.Logger) error {
 		zap.String("file_storage_path", cfg.FileStoragePath),
 		zap.Duration("store_interval", cfg.StoreInterval),
 		zap.Bool("restore", cfg.Restore),
+		zap.Bool("database", cfg.DatabaseDSN != ""),
 	)
 
 	serveErr := make(chan error, 1)
