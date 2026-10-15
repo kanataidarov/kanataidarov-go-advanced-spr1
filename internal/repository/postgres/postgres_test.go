@@ -2,12 +2,19 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/service"
@@ -16,7 +23,7 @@ import (
 var _ service.Storage = (*DB)(nil)
 
 func TestNewRejectsInvalidDSN(t *testing.T) {
-	db, err := New(context.Background(), "postgres://user:pass@localhost:notaport/db")
+	db, err := New(context.Background(), "postgres://user:pass@localhost:notaport/db", zap.NewNop())
 	if err == nil {
 		db.Close()
 		t.Fatal("invalid DSN must produce an error")
@@ -24,7 +31,7 @@ func TestNewRejectsInvalidDSN(t *testing.T) {
 }
 
 func TestPingUnreachableDatabase(t *testing.T) {
-	db, err := New(context.Background(), "postgres://user:pass@127.0.0.1:1/db?sslmode=disable&connect_timeout=1")
+	db, err := New(context.Background(), "postgres://user:pass@127.0.0.1:1/db?sslmode=disable&connect_timeout=1", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,7 +60,7 @@ func newTestDB(t *testing.T) *DB {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	db, err := New(ctx, dsn)
+	db, err := New(ctx, dsn, zap.NewNop())
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -277,3 +284,88 @@ func TestStorageUpdateMetricsConcurrentBatches(t *testing.T) {
 
 func ptrFloat(v float64) *float64 { return &v }
 func ptrInt(v int64) *int64       { return &v }
+
+func TestIsRetriable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "connection failure (class 08)", err: &pgconn.PgError{Code: pgerrcode.ConnectionFailure}, want: true},
+		{name: "connection does not exist (class 08)", err: &pgconn.PgError{Code: pgerrcode.ConnectionDoesNotExist}, want: true},
+		{name: "wrapped class 08", err: fmt.Errorf("upsert: %w", &pgconn.PgError{Code: pgerrcode.ConnectionException}), want: true},
+		{name: "server is starting up", err: &pgconn.PgError{Code: pgerrcode.CannotConnectNow}, want: true},
+		{name: "server is shutting down", err: &pgconn.PgError{Code: pgerrcode.AdminShutdown}, want: true},
+		{name: "deadlock", err: &pgconn.PgError{Code: pgerrcode.DeadlockDetected}, want: true},
+		{name: "serialization failure", err: &pgconn.PgError{Code: pgerrcode.SerializationFailure}, want: true},
+		{name: "wrong password", err: &pgconn.PgError{Code: pgerrcode.InvalidPassword}, want: false},
+		{name: "unique violation", err: &pgconn.PgError{Code: pgerrcode.UniqueViolation}, want: false},
+		{name: "numeric overflow", err: &pgconn.PgError{Code: pgerrcode.NumericValueOutOfRange}, want: false},
+		{name: "no rows", err: pgx.ErrNoRows, want: false},
+		{name: "plain error", err: errors.New("boom"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRetriable(tt.err); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStorageRetriesWhenDatabaseIsUnreachable(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+
+	db, err := New(context.Background(), "postgres://user:pass@127.0.0.1:1/db?sslmode=disable&connect_timeout=1", zap.New(core))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer db.Close()
+
+	if !IsRetriable(db.Ping(t.Context())) {
+		t.Fatal("a refused connection must be retriable")
+	}
+
+	db.retry.Delays = []time.Duration{time.Millisecond, 3 * time.Millisecond, 5 * time.Millisecond}
+
+	err = db.SetGauge(t.Context(), "Alloc", 1)
+
+	var connectErr *pgconn.ConnectError
+	if !errors.As(err, &connectErr) {
+		t.Fatalf("got error %v, want a wrapped *pgconn.ConnectError", err)
+	}
+
+	if n := logs.Len(); n != 3 {
+		t.Errorf("got %d retry log entries, want 3 additional attempts", n)
+	}
+}
+
+func TestStorageDoesNotRetryAuthErrors(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_DSN is not set")
+	}
+
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	core, logs := observer.New(zap.WarnLevel)
+
+	db, err := New(context.Background(), fmt.Sprintf("postgres://no_such_user:x@%s:%d/%s?sslmode=disable", cfg.Host, cfg.Port, cfg.Database), zap.New(core))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.SetGauge(t.Context(), "Alloc", 1); err == nil {
+		t.Fatal("expected an authentication error")
+	}
+
+	if n := logs.Len(); n != 0 {
+		t.Errorf("got %d retries, an authentication error must not be retried", n)
+	}
+}

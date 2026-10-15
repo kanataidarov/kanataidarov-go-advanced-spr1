@@ -4,32 +4,57 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/mailru/easyjson"
+	"go.uber.org/zap"
 
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
+	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/retry"
 )
 
-const requestTimeout = 5 * time.Second
+const requestTimeout = 15 * time.Second
+
+type StatusError struct {
+	StatusCode int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("unexpected status code %d", e.StatusCode)
+}
 
 type Sender struct {
 	client         *http.Client
 	baseURL        string
 	reportInterval time.Duration
+	retry          retry.Policy
 }
 
-func NewSender(cfg config.SenderConfig) *Sender {
+func NewSender(cfg config.SenderConfig, log *zap.Logger) *Sender {
+	onRetry := func(err error, attempt int, delay time.Duration) {
+		log.Warn("cannot connect to server, retrying",
+			zap.Int("attempt", attempt), zap.Duration("delay", delay), zap.Error(err))
+	}
+
 	return &Sender{
 		client:         &http.Client{Timeout: requestTimeout},
 		baseURL:        normalizeBaseURL(cfg.Address),
 		reportInterval: cfg.ReportInterval,
+		retry:          retry.New(isConnectionError, onRetry),
 	}
+}
+
+func isConnectionError(err error) bool {
+	var opErr *net.OpError
+
+	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 func (s *Sender) ReportInterval() time.Duration {
@@ -51,7 +76,13 @@ func (s *Sender) SendBatch(ctx context.Context, metrics []models.Metrics) error 
 		return fmt.Errorf("cannot compress metrics: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/updates/", bytes.NewReader(compressed))
+	return s.retry.Do(ctx, func(ctx context.Context) error {
+		return s.post(ctx, compressed)
+	})
+}
+
+func (s *Sender) post(ctx context.Context, gzipped []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/updates/", bytes.NewReader(gzipped))
 	if err != nil {
 		return err
 	}
@@ -70,7 +101,7 @@ func (s *Sender) SendBatch(ctx context.Context, metrics []models.Metrics) error 
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code %d", resp.StatusCode)
+		return &StatusError{StatusCode: resp.StatusCode}
 	}
 
 	return nil

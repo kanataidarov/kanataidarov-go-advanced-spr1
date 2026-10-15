@@ -3,25 +3,34 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	"go.uber.org/zap"
 
+	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/retry"
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/migrations"
 )
 
 type DB struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	retry retry.Policy
 }
 
-func New(ctx context.Context, dsn string) (*DB, error) {
+func New(ctx context.Context, dsn string, log *zap.Logger) (*DB, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create postgres connection pool: %w", err)
 	}
 
-	return &DB{pool: pool}, nil
+	onRetry := func(err error, attempt int, delay time.Duration) {
+		log.Warn("retriable database error, retrying",
+			zap.Int("attempt", attempt), zap.Duration("delay", delay), zap.Error(err))
+	}
+
+	return &DB{pool: pool, retry: retry.New(IsRetriable, onRetry)}, nil
 }
 
 func (db *DB) Migrate(ctx context.Context) error {

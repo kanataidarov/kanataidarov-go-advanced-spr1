@@ -232,7 +232,7 @@ func TestAgentReportSurvivesServerErrors(t *testing.T) {
 func TestSenderSkipsEmptyBatch(t *testing.T) {
 	srv, requests := newRecordingServer(t)
 
-	s := NewSender(config.SenderConfig{Address: srv.URL, ReportInterval: time.Second})
+	s := NewSender(config.SenderConfig{Address: srv.URL, ReportInterval: time.Second}, zap.NewNop())
 
 	if err := s.SendBatch(context.Background(), nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)

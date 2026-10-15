@@ -18,7 +18,7 @@ type Agent struct {
 func New(cfg config.AgentConfig, log *zap.Logger) *Agent {
 	return &Agent{
 		collector: NewCollector(cfg.Collector),
-		sender:    NewSender(cfg.Sender),
+		sender:    NewSender(cfg.Sender, log),
 		log:       log,
 	}
 }

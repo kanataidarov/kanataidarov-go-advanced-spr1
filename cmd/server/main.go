@@ -148,7 +148,7 @@ func openDatabase(ctx context.Context, dsn string, zlog *zap.Logger) *postgres.D
 		return nil
 	}
 
-	db, err := postgres.New(ctx, dsn)
+	db, err := postgres.New(ctx, dsn, zlog)
 	if err != nil {
 		zlog.Error("cannot use database, falling back to file or memory storage", zap.Error(err))
 

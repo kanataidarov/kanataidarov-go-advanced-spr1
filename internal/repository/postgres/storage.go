@@ -30,7 +30,12 @@ const (
 )
 
 func (db *DB) SetGauge(ctx context.Context, name string, value float64) error {
-	if _, err := db.pool.Exec(ctx, upsertGauge, name, value); err != nil {
+	err := db.retry.Do(ctx, func(ctx context.Context) error {
+		_, err := db.pool.Exec(ctx, upsertGauge, name, value)
+
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("upsert gauge: %w", err)
 	}
 
@@ -39,7 +44,11 @@ func (db *DB) SetGauge(ctx context.Context, name string, value float64) error {
 
 func (db *DB) AddCounter(ctx context.Context, name string, delta int64) (int64, error) {
 	var total int64
-	if err := db.pool.QueryRow(ctx, upsertCounter, name, delta).Scan(&total); err != nil {
+
+	err := db.retry.Do(ctx, func(ctx context.Context) error {
+		return db.pool.QueryRow(ctx, upsertCounter, name, delta).Scan(&total)
+	})
+	if err != nil {
 		return 0, fmt.Errorf("upsert counter: %w", err)
 	}
 
@@ -49,7 +58,9 @@ func (db *DB) AddCounter(ctx context.Context, name string, delta int64) (int64, 
 func (db *DB) Gauge(ctx context.Context, name string) (float64, bool, error) {
 	var value float64
 
-	err := db.pool.QueryRow(ctx, selectGauge, name).Scan(&value)
+	err := db.retry.Do(ctx, func(ctx context.Context) error {
+		return db.pool.QueryRow(ctx, selectGauge, name).Scan(&value)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -64,7 +75,9 @@ func (db *DB) Gauge(ctx context.Context, name string) (float64, bool, error) {
 func (db *DB) Counter(ctx context.Context, name string) (int64, bool, error) {
 	var delta int64
 
-	err := db.pool.QueryRow(ctx, selectCounter, name).Scan(&delta)
+	err := db.retry.Do(ctx, func(ctx context.Context) error {
+		return db.pool.QueryRow(ctx, selectCounter, name).Scan(&delta)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -77,35 +90,54 @@ func (db *DB) Counter(ctx context.Context, name string) (int64, bool, error) {
 }
 
 func (db *DB) All(ctx context.Context) ([]models.Metrics, error) {
-	rows, err := db.pool.Query(ctx, selectAll)
-	if err != nil {
-		return nil, fmt.Errorf("select metrics: %w", err)
-	}
+	var all []models.Metrics
 
-	all, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.Metrics, error) {
-		var m models.Metrics
-		err := row.Scan(&m.ID, &m.MType, &m.Value, &m.Delta)
+	err := db.retry.Do(ctx, func(ctx context.Context) error {
+		rows, err := db.pool.Query(ctx, selectAll)
+		if err != nil {
+			return err
+		}
 
-		return m, err
+		all, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (models.Metrics, error) {
+			var m models.Metrics
+			err := row.Scan(&m.ID, &m.MType, &m.Value, &m.Delta)
+
+			return m, err
+		})
+
+		return err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read metrics: %w", err)
+		return nil, fmt.Errorf("select metrics: %w", err)
 	}
 
 	return all, nil
 }
 
 func (db *DB) UpdateMetrics(ctx context.Context, metrics []models.Metrics) error {
+	for _, m := range metrics {
+		if !(m.MType == models.Gauge && m.Value != nil) && !(m.MType == models.Counter && m.Delta != nil) {
+			return fmt.Errorf("invalid metric %q of type %q", m.ID, m.MType)
+		}
+	}
+
+	if err := db.retry.Do(ctx, func(ctx context.Context) error {
+		return db.applyBatch(ctx, metrics)
+	}); err != nil {
+		return fmt.Errorf("update metrics: %w", err)
+	}
+
+	return nil
+}
+
+func (db *DB) applyBatch(ctx context.Context, metrics []models.Metrics) error {
 	batch := &pgx.Batch{}
 
 	for _, m := range metrics {
-		switch {
-		case m.MType == models.Gauge && m.Value != nil:
+		if m.MType == models.Gauge {
 			batch.Queue(upsertGauge, m.ID, *m.Value)
-		case m.MType == models.Counter && m.Delta != nil:
+		} else {
 			batch.Queue(upsertCounter, m.ID, *m.Delta)
-		default:
-			return fmt.Errorf("invalid metric %q of type %q", m.ID, m.MType)
 		}
 	}
 
@@ -117,7 +149,7 @@ func (db *DB) UpdateMetrics(ctx context.Context, metrics []models.Metrics) error
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
-		return fmt.Errorf("update metrics: %w", err)
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
