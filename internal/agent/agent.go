@@ -18,7 +18,7 @@ type Agent struct {
 func New(cfg config.AgentConfig, log *zap.Logger) *Agent {
 	return &Agent{
 		collector: NewCollector(cfg.Collector),
-		sender:    NewSender(cfg.Sender),
+		sender:    NewSender(cfg.Sender, log),
 		log:       log,
 	}
 }
@@ -45,26 +45,20 @@ func (a *Agent) Run(ctx context.Context) {
 }
 
 func (a *Agent) Report(ctx context.Context) {
-	var (
-		reportedPollCount int64
-		failed            bool
-	)
-
-	for _, metric := range a.collector.Snapshot() {
-		if err := a.sender.Send(ctx, metric); err != nil {
-			a.log.Error("cannot report metric", zap.String("metric", metric.ID), zap.Error(err))
-
-			failed = true
-
-			continue
-		}
-
-		if metric.ID == pollCountMetric && metric.Delta != nil {
-			reportedPollCount = *metric.Delta
-		}
+	metrics := a.collector.Snapshot()
+	if len(metrics) == 0 {
+		return
 	}
 
-	if !failed && reportedPollCount > 0 {
-		a.collector.ResetPollCount(reportedPollCount)
+	if err := a.sender.SendBatch(ctx, metrics); err != nil {
+		a.log.Error("cannot report metrics", zap.Int("count", len(metrics)), zap.Error(err))
+
+		return
+	}
+
+	for _, metric := range metrics {
+		if metric.ID == pollCountMetric && metric.Delta != nil && *metric.Delta > 0 {
+			a.collector.ResetPollCount(*metric.Delta)
+		}
 	}
 }

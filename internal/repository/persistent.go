@@ -29,35 +29,58 @@ func NewPersistentStorage(mem *MemStorage, file *FileStore, syncMode bool, log *
 	}
 }
 
-func (p *PersistentStorage) SetGauge(name string, value float64) {
-	p.mem.SetGauge(name, value)
-	p.saveIfSync()
-}
+func (p *PersistentStorage) SetGauge(ctx context.Context, name string, value float64) error {
+	if err := p.mem.SetGauge(ctx, name, value); err != nil {
+		return err
+	}
 
-func (p *PersistentStorage) AddCounter(name string, delta int64) int64 {
-	total := p.mem.AddCounter(name, delta)
 	p.saveIfSync()
 
-	return total
+	return nil
 }
 
-func (p *PersistentStorage) Gauge(name string) (float64, bool) {
-	return p.mem.Gauge(name)
+func (p *PersistentStorage) AddCounter(ctx context.Context, name string, delta int64) (int64, error) {
+	total, err := p.mem.AddCounter(ctx, name, delta)
+	if err != nil {
+		return 0, err
+	}
+
+	p.saveIfSync()
+
+	return total, nil
 }
 
-func (p *PersistentStorage) Counter(name string) (int64, bool) {
-	return p.mem.Counter(name)
+func (p *PersistentStorage) UpdateMetrics(ctx context.Context, metrics []models.Metrics) error {
+	if err := p.mem.UpdateMetrics(ctx, metrics); err != nil {
+		return err
+	}
+
+	p.saveIfSync()
+
+	return nil
 }
 
-func (p *PersistentStorage) All() []models.Metrics {
-	return p.mem.All()
+func (p *PersistentStorage) Gauge(ctx context.Context, name string) (float64, bool, error) {
+	return p.mem.Gauge(ctx, name)
+}
+
+func (p *PersistentStorage) Counter(ctx context.Context, name string) (int64, bool, error) {
+	return p.mem.Counter(ctx, name)
+}
+
+func (p *PersistentStorage) All(ctx context.Context) ([]models.Metrics, error) {
+	return p.mem.All(ctx)
+}
+
+func (p *PersistentStorage) Ping(_ context.Context) error {
+	return nil
 }
 
 func (p *PersistentStorage) Save() error {
 	p.saveMu.Lock()
 	defer p.saveMu.Unlock()
 
-	return p.file.Save(p.mem.All())
+	return p.file.Save(p.mem.snapshot())
 }
 
 func (p *PersistentStorage) Run(ctx context.Context, interval time.Duration) {

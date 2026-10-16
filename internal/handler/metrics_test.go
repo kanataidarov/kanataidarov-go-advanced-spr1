@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -20,6 +21,51 @@ func newTestRouter() (http.Handler, *repository.MemStorage) {
 	h := NewMetricsHandler(service.NewMetricsService(storage), zap.NewNop())
 
 	return h.Router(), storage
+}
+
+func seedStorage(t *testing.T, s *repository.MemStorage) {
+	t.Helper()
+
+	if err := s.SetGauge(context.Background(), "Alloc", 12.5); err != nil {
+		t.Fatalf("seed gauge: %v", err)
+	}
+
+	if _, err := s.AddCounter(context.Background(), "PollCount", 7); err != nil {
+		t.Fatalf("seed counter: %v", err)
+	}
+}
+
+func storedGauge(t *testing.T, s *repository.MemStorage, name string) (float64, bool) {
+	t.Helper()
+
+	v, ok, err := s.Gauge(context.Background(), name)
+	if err != nil {
+		t.Fatalf("read gauge %q: %v", name, err)
+	}
+
+	return v, ok
+}
+
+func storedCounter(t *testing.T, s *repository.MemStorage, name string) (int64, bool) {
+	t.Helper()
+
+	v, ok, err := s.Counter(context.Background(), name)
+	if err != nil {
+		t.Fatalf("read counter %q: %v", name, err)
+	}
+
+	return v, ok
+}
+
+func storedCount(t *testing.T, s *repository.MemStorage) int {
+	t.Helper()
+
+	all, err := s.All(context.Background())
+	if err != nil {
+		t.Fatalf("read metrics: %v", err)
+	}
+
+	return len(all)
 }
 
 func TestMetricsHandlerUpdate(t *testing.T) {
@@ -77,16 +123,16 @@ func TestMetricsHandlerStoresValues(t *testing.T) {
 		}
 	}
 
-	if got, ok := storage.Gauge("Alloc"); !ok || got != 20 {
+	if got, ok := storedGauge(t, storage, "Alloc"); !ok || got != 20 {
 		t.Errorf("got gauge (%v, %v), want (20, true)", got, ok)
 	}
 
-	if got, ok := storage.Counter("PollCount"); !ok || got != 12 {
+	if got, ok := storedCounter(t, storage, "PollCount"); !ok || got != 12 {
 		t.Errorf("got counter (%v, %v), want (12, true)", got, ok)
 	}
 
-	if len(storage.All()) != 2 {
-		t.Errorf("got %d stored metrics, want 2", len(storage.All()))
+	if storedCount(t, storage) != 2 {
+		t.Errorf("got %d stored metrics, want 2", storedCount(t, storage))
 	}
 }
 
@@ -107,8 +153,7 @@ func TestMetricsHandlerResponseHeaders(t *testing.T) {
 
 func TestMetricsHandlerValue(t *testing.T) {
 	router, storage := newTestRouter()
-	storage.SetGauge("Alloc", 12.5)
-	storage.AddCounter("PollCount", 7)
+	seedStorage(t, storage)
 
 	tests := []struct {
 		name       string
@@ -141,8 +186,7 @@ func TestMetricsHandlerValue(t *testing.T) {
 
 func TestMetricsHandlerIndex(t *testing.T) {
 	router, storage := newTestRouter()
-	storage.SetGauge("Alloc", 12.5)
-	storage.AddCounter("PollCount", 7)
+	seedStorage(t, storage)
 
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
@@ -205,7 +249,7 @@ func TestMetricsHandlerUpdateJSON(t *testing.T) {
 				t.Errorf("gauge: got response %+v", got)
 			}
 
-			if v, ok := storage.Gauge("LastGC"); !ok || v != 1744184459 {
+			if v, ok := storedGauge(t, storage, "LastGC"); !ok || v != 1744184459 {
 				t.Errorf("gauge: got stored (%v, %v), want (1744184459, true)", v, ok)
 			}
 
@@ -249,7 +293,7 @@ func TestMetricsHandlerUpdateJSONErrors(t *testing.T) {
 				t.Errorf("got status %d, want %d", rec.Code, tt.wantStatus)
 			}
 
-			if n := len(storage.All()); n != 0 {
+			if n := storedCount(t, storage); n != 0 {
 				t.Errorf("got %d stored metrics, want 0", n)
 			}
 		})
@@ -258,8 +302,7 @@ func TestMetricsHandlerUpdateJSONErrors(t *testing.T) {
 
 func TestMetricsHandlerValueJSON(t *testing.T) {
 	router, storage := newTestRouter()
-	storage.SetGauge("Alloc", 12.5)
-	storage.AddCounter("PollCount", 7)
+	seedStorage(t, storage)
 
 	tests := []struct {
 		name       string
@@ -326,5 +369,46 @@ func TestMetricsHandlerJSONAndURLShareStorage(t *testing.T) {
 
 	if rec.Body.String() != "7" {
 		t.Errorf("got %q, want 7", rec.Body.String())
+	}
+}
+
+func TestMetricsHandlerUpdatesBatch(t *testing.T) {
+	router, storage := newTestRouter()
+	seedStorage(t, storage)
+
+	rec := postJSON(t, router, "/updates/", `[
+		{"id":"PollCount","type":"counter","delta":3},
+		{"id":"Alloc","type":"gauge","value":1},
+		{"id":"PollCount","type":"counter","delta":4},
+		{"id":"Alloc","type":"gauge","value":2}
+	]`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	if v, ok := storedCounter(t, storage, "PollCount"); !ok || v != 14 {
+		t.Errorf("got counter (%v, %v), want (14, true): 7 + 3 + 4", v, ok)
+	}
+
+	if v, ok := storedGauge(t, storage, "Alloc"); !ok || v != 2 {
+		t.Errorf("got gauge (%v, %v), want (2, true): the last value wins", v, ok)
+	}
+
+	rec = postJSON(t, router, "/value/", `{"id":"PollCount","type":"counter"}`)
+	if got := decodeMetric(t, rec); got.Delta == nil || *got.Delta != 14 {
+		t.Errorf("POST /value/: got %+v, want delta 14", got)
+	}
+}
+
+func TestMetricsHandlerUpdatesInvalidBatchChangesNothing(t *testing.T) {
+	router, storage := newTestRouter()
+
+	rec := postJSON(t, router, "/updates/", `[{"id":"Alloc","type":"gauge","value":1},{"id":"PollCount","type":"counter"}]`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want 400", rec.Code)
+	}
+
+	if n := storedCount(t, storage); n != 0 {
+		t.Errorf("got %d stored metrics, want 0: a rejected batch must not be saved partially", n)
 	}
 }

@@ -310,3 +310,46 @@ func TestServerConfigRejectsBadStorageSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestServerConfigDatabaseDSN(t *testing.T) {
+	const (
+		flagDSN = "postgres://flag:flag@localhost:5432/flag?sslmode=disable"
+		envDSN  = "postgres://env:env@localhost:5432/env?sslmode=disable"
+	)
+
+	tests := []struct {
+		name string
+		args []string
+		env  map[string]string
+		want string
+	}{
+		{name: "default is empty"},
+		{name: "flag only", args: []string{"-d=" + flagDSN}, want: flagDSN},
+		{name: "env only", env: map[string]string{"DATABASE_DSN": envDSN}, want: envDSN},
+		{
+			name: "env beats flag",
+			args: []string{"-d", flagDSN},
+			env:  map[string]string{"DATABASE_DSN": envDSN},
+			want: envDSN,
+		},
+		{
+			name: "empty env is ignored",
+			args: []string{"-d", flagDSN},
+			env:  map[string]string{"DATABASE_DSN": ""},
+			want: flagDSN,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseServerConfig("server", tt.args, envMap(tt.env))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if cfg.DatabaseDSN != tt.want {
+				t.Errorf("got %q, want %q", cfg.DatabaseDSN, tt.want)
+			}
+		})
+	}
+}

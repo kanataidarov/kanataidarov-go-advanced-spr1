@@ -24,6 +24,7 @@ const (
 	envStoreInterval   = "STORE_INTERVAL"
 	envFileStoragePath = "FILE_STORAGE_PATH"
 	envRestore         = "RESTORE"
+	envDatabaseDSN     = "DATABASE_DSN"
 )
 
 type LookupEnvFunc func(key string) (string, bool)
@@ -33,6 +34,7 @@ type ServerConfig struct {
 	StoreInterval   time.Duration
 	FileStoragePath string
 	Restore         bool
+	DatabaseDSN     string
 }
 
 func NewServerConfig() (ServerConfig, error) {
@@ -51,6 +53,7 @@ func ParseServerConfig(name string, args []string, lookupEnv LookupEnvFunc) (Ser
 	storeInterval := fs.Int("i", seconds(defaultStoreInterval), "metrics store interval, in seconds; 0 saves on every update (env "+envStoreInterval+")")
 	fs.StringVar(&cfg.FileStoragePath, "f", cfg.FileStoragePath, "file to store metrics in; empty disables storing (env "+envFileStoragePath+")")
 	fs.BoolVar(&cfg.Restore, "r", cfg.Restore, "restore metrics from the file on start (env "+envRestore+")")
+	fs.StringVar(&cfg.DatabaseDSN, "d", cfg.DatabaseDSN, "PostgreSQL connection string; empty disables the database (env "+envDatabaseDSN+")")
 
 	if err := parse(fs, args); err != nil {
 		return ServerConfig{}, err
@@ -70,6 +73,10 @@ func ParseServerConfig(name string, args []string, lookupEnv LookupEnvFunc) (Ser
 
 	if err := envBool(lookupEnv, envRestore, &cfg.Restore); err != nil {
 		return ServerConfig{}, err
+	}
+
+	if v, ok := envValue(lookupEnv, envDatabaseDSN); ok {
+		cfg.DatabaseDSN = v
 	}
 
 	if *storeInterval < 0 {
