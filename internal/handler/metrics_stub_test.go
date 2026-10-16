@@ -233,19 +233,13 @@ func TestPing(t *testing.T) {
 		wantCode  int
 		wantCalls int
 	}{
-		{name: "database is reachable", pinger: &stubPinger{}, wantCode: http.StatusOK, wantCalls: 1},
-		{name: "database is unreachable", pinger: &stubPinger{err: errors.New("connection refused")}, wantCode: http.StatusInternalServerError, wantCalls: 1},
-		{name: "database is not configured", wantCode: http.StatusInternalServerError},
+		{name: "storage is reachable", pinger: &stubPinger{}, wantCode: http.StatusOK, wantCalls: 1},
+		{name: "storage is unreachable", pinger: &stubPinger{err: errors.New("connection refused")}, wantCode: http.StatusInternalServerError, wantCalls: 1},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var opts []Option
-			if tt.pinger != nil {
-				opts = append(opts, WithPinger(tt.pinger))
-			}
-
-			router := NewMetricsHandler(&stubService{}, zap.NewNop(), opts...).Router()
+			router := NewMetricsHandler(&stubService{}, zap.NewNop(), WithPinger(tt.pinger)).Router()
 
 			req := httptest.NewRequest(http.MethodGet, "/ping", http.NoBody)
 			rec := httptest.NewRecorder()
@@ -255,7 +249,7 @@ func TestPing(t *testing.T) {
 				t.Errorf("got status %d, want %d", rec.Code, tt.wantCode)
 			}
 
-			if tt.pinger != nil && tt.pinger.calls != tt.wantCalls {
+			if tt.pinger.calls != tt.wantCalls {
 				t.Errorf("got %d Ping calls, want %d", tt.pinger.calls, tt.wantCalls)
 			}
 		})

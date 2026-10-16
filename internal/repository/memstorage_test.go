@@ -197,3 +197,9 @@ func TestMemStorageUpdateMetricsIsAtomic(t *testing.T) {
 		t.Error("a failed batch must not change the storage")
 	}
 }
+
+func TestMemStoragePingIsAlwaysHealthy(t *testing.T) {
+	if err := NewMemStorage().Ping(t.Context()); err != nil {
+		t.Errorf("in-memory storage is always available, got %v", err)
+	}
+}

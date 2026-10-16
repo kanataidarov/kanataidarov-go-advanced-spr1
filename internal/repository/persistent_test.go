@@ -161,3 +161,12 @@ func TestPersistentStorageSyncModeSavesBatch(t *testing.T) {
 		t.Errorf("counter was not saved: %+v", got)
 	}
 }
+
+func TestPersistentStoragePingIsAlwaysHealthy(t *testing.T) {
+	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
+	p := NewPersistentStorage(NewMemStorage(), file, true, zap.NewNop())
+
+	if err := p.Ping(t.Context()); err != nil {
+		t.Errorf("file-backed storage is always available, got %v", err)
+	}
+}

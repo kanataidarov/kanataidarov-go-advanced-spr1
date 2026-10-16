@@ -31,7 +31,7 @@ func TestNewRejectsInvalidDSN(t *testing.T) {
 }
 
 func TestPingUnreachableDatabase(t *testing.T) {
-	db, err := New(context.Background(), "postgres://user:pass@127.0.0.1:1/db?sslmode=disable&connect_timeout=1", zap.NewNop())
+	db, err := open(context.Background(), "postgres://user:pass@127.0.0.1:1/db?sslmode=disable&connect_timeout=1", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,8 +44,16 @@ func TestPingUnreachableDatabase(t *testing.T) {
 		t.Error("ping of an unreachable database must fail")
 	}
 
-	if err := db.Migrate(ctx); err == nil {
+	if err := db.migrate(ctx); err == nil {
 		t.Error("migrations on an unreachable database must fail")
+	}
+}
+
+func TestNewFailsWhenMigrationsCannotBeApplied(t *testing.T) {
+	db, err := New(context.Background(), "postgres://127.0.0.1:1/db?sslmode=disable&connect_timeout=1", zap.NewNop())
+	if err == nil {
+		db.Close()
+		t.Fatal("New must not return a database without an applied schema")
 	}
 }
 
@@ -67,11 +75,7 @@ func newTestDB(t *testing.T) *DB {
 
 	t.Cleanup(db.Close)
 
-	if err := db.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	if err := db.Migrate(ctx); err != nil {
+	if err := db.migrate(ctx); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
 
@@ -308,7 +312,7 @@ func TestIsRetriable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := IsRetriable(tt.err); got != tt.want {
+			if got := isRetriable(tt.err); got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
@@ -318,13 +322,13 @@ func TestIsRetriable(t *testing.T) {
 func TestStorageRetriesWhenDatabaseIsUnreachable(t *testing.T) {
 	core, logs := observer.New(zap.WarnLevel)
 
-	db, err := New(context.Background(), "postgres://user:pass@127.0.0.1:1/db?sslmode=disable&connect_timeout=1", zap.New(core))
+	db, err := open(context.Background(), "postgres://user:pass@127.0.0.1:1/db?sslmode=disable&connect_timeout=1", zap.New(core))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer db.Close()
 
-	if !IsRetriable(db.Ping(t.Context())) {
+	if !isRetriable(db.Ping(t.Context())) {
 		t.Fatal("a refused connection must be retriable")
 	}
 
@@ -355,7 +359,7 @@ func TestStorageDoesNotRetryAuthErrors(t *testing.T) {
 
 	core, logs := observer.New(zap.WarnLevel)
 
-	db, err := New(context.Background(), fmt.Sprintf("postgres://no_such_user:x@%s:%d/%s?sslmode=disable", cfg.Host, cfg.Port, cfg.Database), zap.New(core))
+	db, err := open(context.Background(), fmt.Sprintf("postgres://no_such_user:x@%s:%d/%s?sslmode=disable", cfg.Host, cfg.Port, cfg.Database), zap.New(core))
 	if err != nil {
 		t.Fatal(err)
 	}

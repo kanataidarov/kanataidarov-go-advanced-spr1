@@ -16,7 +16,7 @@ var retriableCodes = []string{
 	pgerrcode.DeadlockDetected,
 }
 
-func IsRetriable(err error) bool {
+func isRetriable(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		return pgerrcode.IsConnectionException(pgErr.Code) || slices.Contains(retriableCodes, pgErr.Code)

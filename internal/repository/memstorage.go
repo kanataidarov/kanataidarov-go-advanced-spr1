@@ -57,6 +57,10 @@ func (s *MemStorage) Counter(_ context.Context, name string) (int64, bool, error
 	return v, ok, nil
 }
 
+func (s *MemStorage) Ping(_ context.Context) error {
+	return nil
+}
+
 func (s *MemStorage) All(_ context.Context) ([]models.Metrics, error) {
 	return s.snapshot(), nil
 }

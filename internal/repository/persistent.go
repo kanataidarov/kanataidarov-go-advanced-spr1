@@ -72,6 +72,10 @@ func (p *PersistentStorage) All(ctx context.Context) ([]models.Metrics, error) {
 	return p.mem.All(ctx)
 }
 
+func (p *PersistentStorage) Ping(_ context.Context) error {
+	return nil
+}
+
 func (p *PersistentStorage) Save() error {
 	p.saveMu.Lock()
 	defer p.saveMu.Unlock()

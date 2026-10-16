@@ -16,6 +16,7 @@ import (
 
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/config"
 	models "github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/model"
+	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/retry"
 )
 
 type flakyTransport struct {
@@ -38,13 +39,17 @@ func newTestSender(t *testing.T, address string, transport http.RoundTripper) (*
 	core, logs := observer.New(zap.InfoLevel)
 
 	s := NewSender(config.SenderConfig{Address: address, ReportInterval: time.Second}, zap.New(core))
-	s.retry.Delays = []time.Duration{time.Millisecond, 3 * time.Millisecond, 5 * time.Millisecond}
+	retryTransport(s).Policy.Delays = []time.Duration{time.Millisecond, 3 * time.Millisecond, 5 * time.Millisecond}
 
 	if transport != nil {
-		s.client.Transport = transport
+		retryTransport(s).Next = transport
 	}
 
 	return s, logs
+}
+
+func retryTransport(s *Sender) *retry.Transport {
+	return s.client.Transport.(*retry.Transport)
 }
 
 var testBatch = []models.Metrics{{ID: pollCountMetric, MType: models.Counter, Delta: new(int64)}}
@@ -138,7 +143,7 @@ func TestIsConnectionErrorOnRefusedConnection(t *testing.T) {
 func TestSenderStopsRetryingOnShutdown(t *testing.T) {
 	transport := &flakyTransport{failures: 100}
 	s, _ := newTestSender(t, "localhost:1", transport)
-	s.retry.Delays = []time.Duration{time.Hour}
+	retryTransport(s).Policy.Delays = []time.Duration{time.Hour}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

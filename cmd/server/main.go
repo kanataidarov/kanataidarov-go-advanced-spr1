@@ -23,10 +23,12 @@ import (
 	"github.com/kanataidarov/kanataidarov-go-advanced-spr1/internal/service"
 )
 
-const (
-	shutdownTimeout = 5 * time.Second
-	migrateTimeout  = 10 * time.Second
-)
+const shutdownTimeout = 5 * time.Second
+
+type pingableStorage interface {
+	service.Storage
+	handler.Pinger
+}
 
 func main() {
 	zlog, err := logger.New()
@@ -54,17 +56,15 @@ func run(zlog *zap.Logger) error {
 	mem := repository.NewMemStorage()
 
 	var (
-		storage     service.Storage = mem
+		storage     pingableStorage = mem
 		storageKind                 = "memory"
 		persistent  *repository.PersistentStorage
-		handlerOpts []handler.Option
 	)
 
 	if db := openDatabase(ctx, cfg.DatabaseDSN, zlog); db != nil {
 		defer db.Close()
 
 		storage, storageKind = db, "postgres"
-		handlerOpts = append(handlerOpts, handler.WithPinger(db))
 	} else if cfg.FileStoragePath != "" {
 		if err := os.MkdirAll(filepath.Dir(cfg.FileStoragePath), 0o750); err != nil {
 			return fmt.Errorf("cannot create directory for %s: %w", cfg.FileStoragePath, err)
@@ -83,7 +83,7 @@ func run(zlog *zap.Logger) error {
 	}
 
 	metrics := service.NewMetricsService(storage)
-	metricsHandler := handler.NewMetricsHandler(metrics, zlog, handlerOpts...)
+	metricsHandler := handler.NewMetricsHandler(metrics, zlog, handler.WithPinger(storage))
 
 	srv := &http.Server{
 		Addr:              cfg.Address,
@@ -150,16 +150,6 @@ func openDatabase(ctx context.Context, dsn string, zlog *zap.Logger) *postgres.D
 
 	db, err := postgres.New(ctx, dsn, zlog)
 	if err != nil {
-		zlog.Error("cannot use database, falling back to file or memory storage", zap.Error(err))
-
-		return nil
-	}
-
-	migrateCtx, cancel := context.WithTimeout(ctx, migrateTimeout)
-	defer cancel()
-
-	if err := db.Migrate(migrateCtx); err != nil {
-		db.Close()
 		zlog.Error("cannot use database, falling back to file or memory storage", zap.Error(err))
 
 		return nil

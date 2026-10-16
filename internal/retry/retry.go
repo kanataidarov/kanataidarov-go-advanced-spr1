@@ -19,11 +19,19 @@ func New(retriable func(error) bool, onRetry func(err error, attempt int, delay 
 }
 
 func (p Policy) Do(ctx context.Context, op func(ctx context.Context) error) error {
-	err := op(ctx)
+	_, err := DoValue(ctx, p, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, op(ctx)
+	})
+
+	return err
+}
+
+func DoValue[T any](ctx context.Context, p Policy, op func(ctx context.Context) (T, error)) (T, error) {
+	v, err := op(ctx)
 
 	for i, delay := range p.Delays {
 		if err == nil || p.Retriable == nil || !p.Retriable(err) {
-			return err
+			return v, err
 		}
 
 		if p.OnRetry != nil {
@@ -36,16 +44,16 @@ func (p Policy) Do(ctx context.Context, op func(ctx context.Context) error) erro
 		case <-ctx.Done():
 			timer.Stop()
 
-			return fmt.Errorf("retry aborted: %w: %w", ctx.Err(), err)
+			return v, fmt.Errorf("retry aborted: %w: %w", ctx.Err(), err)
 		case <-timer.C:
 		}
 
-		err = op(ctx)
+		v, err = op(ctx)
 	}
 
 	if err != nil && p.Retriable != nil && p.Retriable(err) {
-		return fmt.Errorf("gave up after %d attempts: %w", len(p.Delays)+1, err)
+		return v, fmt.Errorf("gave up after %d attempts: %w", len(p.Delays)+1, err)
 	}
 
-	return err
+	return v, err
 }

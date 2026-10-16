@@ -34,7 +34,6 @@ type Sender struct {
 	client         *http.Client
 	baseURL        string
 	reportInterval time.Duration
-	retry          retry.Policy
 }
 
 func NewSender(cfg config.SenderConfig, log *zap.Logger) *Sender {
@@ -44,10 +43,12 @@ func NewSender(cfg config.SenderConfig, log *zap.Logger) *Sender {
 	}
 
 	return &Sender{
-		client:         &http.Client{Timeout: requestTimeout},
+		client: &http.Client{
+			Timeout:   requestTimeout,
+			Transport: &retry.Transport{Policy: retry.New(isConnectionError, onRetry)},
+		},
 		baseURL:        normalizeBaseURL(cfg.Address),
 		reportInterval: cfg.ReportInterval,
-		retry:          retry.New(isConnectionError, onRetry),
 	}
 }
 
@@ -76,9 +77,7 @@ func (s *Sender) SendBatch(ctx context.Context, metrics []models.Metrics) error 
 		return fmt.Errorf("cannot compress metrics: %w", err)
 	}
 
-	return s.retry.Do(ctx, func(ctx context.Context) error {
-		return s.post(ctx, compressed)
-	})
+	return s.post(ctx, compressed)
 }
 
 func (s *Sender) post(ctx context.Context, gzipped []byte) error {

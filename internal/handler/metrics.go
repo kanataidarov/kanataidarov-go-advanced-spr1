@@ -59,15 +59,15 @@ const pingTimeout = 3 * time.Second
 
 type MetricsHandler struct {
 	metrics MetricsService
-	db      Pinger
+	pinger  Pinger
 	log     *zap.Logger
 }
 
 type Option func(*MetricsHandler)
 
-func WithPinger(db Pinger) Option {
+func WithPinger(p Pinger) Option {
 	return func(h *MetricsHandler) {
-		h.db = db
+		h.pinger = p
 	}
 }
 
@@ -231,18 +231,12 @@ func (h *MetricsHandler) index(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MetricsHandler) ping(w http.ResponseWriter, r *http.Request) {
-	if h.db == nil {
-		http.Error(w, "database is not available", http.StatusInternalServerError)
-
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), pingTimeout)
 	defer cancel()
 
-	if err := h.db.Ping(ctx); err != nil {
-		h.log.Warn("database ping failed", zap.Error(err))
-		http.Error(w, "database is unavailable", http.StatusInternalServerError)
+	if err := h.pinger.Ping(ctx); err != nil {
+		h.log.Warn("storage ping failed", zap.Error(err))
+		http.Error(w, "storage is unavailable", http.StatusInternalServerError)
 
 		return
 	}
