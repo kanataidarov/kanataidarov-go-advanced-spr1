@@ -30,6 +30,14 @@ type pingableStorage interface {
 	handler.Pinger
 }
 
+type unavailableDB struct {
+	err error
+}
+
+func (u unavailableDB) Ping(_ context.Context) error {
+	return u.err
+}
+
 func main() {
 	zlog, err := logger.New()
 	if err != nil {
@@ -61,7 +69,8 @@ func run(zlog *zap.Logger) error {
 		persistent  *repository.PersistentStorage
 	)
 
-	if db := openDatabase(ctx, cfg.DatabaseDSN, zlog); db != nil {
+	db, dbErr := openDatabase(ctx, cfg.DatabaseDSN, zlog)
+	if db != nil {
 		defer db.Close()
 
 		storage, storageKind = db, "postgres"
@@ -82,8 +91,13 @@ func run(zlog *zap.Logger) error {
 		storage, storageKind = persistent, "file"
 	}
 
+	var pinger handler.Pinger = storage
+	if dbErr != nil {
+		pinger = unavailableDB{err: dbErr}
+	}
+
 	metrics := service.NewMetricsService(storage)
-	metricsHandler := handler.NewMetricsHandler(metrics, zlog, handler.WithPinger(storage))
+	metricsHandler := handler.NewMetricsHandler(metrics, zlog, handler.WithPinger(pinger))
 
 	srv := &http.Server{
 		Addr:              cfg.Address,
@@ -143,19 +157,20 @@ func run(zlog *zap.Logger) error {
 }
 
 // Порядок проверки хранения: PostgreSQL (DATABASE_DSN / -d), затем файл, затем память.
-func openDatabase(ctx context.Context, dsn string, zlog *zap.Logger) *postgres.DB {
+// Ошибка возвращается, только если DSN задан, но БД недоступна.
+func openDatabase(ctx context.Context, dsn string, zlog *zap.Logger) (*postgres.DB, error) {
 	if dsn == "" {
-		return nil
+		return nil, nil
 	}
 
 	db, err := postgres.New(ctx, dsn, zlog)
 	if err != nil {
 		zlog.Error("cannot use database, falling back to file or memory storage", zap.Error(err))
 
-		return nil
+		return nil, err
 	}
 
-	return db
+	return db, nil
 }
 
 func saveOnExit(persistent *repository.PersistentStorage, path string, zlog *zap.Logger) error {
