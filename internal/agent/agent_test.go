@@ -51,7 +51,7 @@ type recordedRequest struct {
 	path            string
 	contentType     string
 	contentEncoding string
-	metric          models.Metrics
+	metrics         models.MetricsList
 	decodeErr       error
 }
 
@@ -75,16 +75,14 @@ func newRecordingServer(t *testing.T) (*httptest.Server, func() []recordedReques
 		if err != nil {
 			req.decodeErr = err
 		} else {
-			req.decodeErr = easyjson.UnmarshalFromReader(zr, &req.metric)
+			req.decodeErr = easyjson.UnmarshalFromReader(zr, &req.metrics)
 		}
 
 		mu.Lock()
 		recorded = append(recorded, req)
 		mu.Unlock()
 
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -96,7 +94,7 @@ func newRecordingServer(t *testing.T) (*httptest.Server, func() []recordedReques
 	}
 }
 
-func TestAgentReportSendsAllMetricsAsJSON(t *testing.T) {
+func TestAgentReportSendsAllMetricsInOneBatch(t *testing.T) {
 	srv, requests := newRecordingServer(t)
 
 	a := New(testAgentConfig(srv.URL), zap.NewNop())
@@ -105,38 +103,36 @@ func TestAgentReportSendsAllMetricsAsJSON(t *testing.T) {
 	a.Report(context.Background())
 
 	recorded := requests()
-	want := snapshotMap(t, a.collector.Snapshot())
-
-	if len(recorded) != len(want) {
-		t.Fatalf("got %d requests, want %d", len(recorded), len(want))
+	if len(recorded) != 1 {
+		t.Fatalf("got %d requests, want exactly one batch", len(recorded))
 	}
 
-	seen := make(map[string]bool, len(recorded))
+	req := recorded[0]
 
-	for _, req := range recorded {
-		if req.method != http.MethodPost {
-			t.Errorf("got method %s, want POST", req.method)
-		}
+	if req.method != http.MethodPost || req.path != "/updates/" {
+		t.Errorf("got %s %s, want POST /updates/", req.method, req.path)
+	}
 
-		if req.path != "/update/" {
-			t.Errorf("got path %q, want /update/", req.path)
-		}
+	if req.contentType != "application/json" {
+		t.Errorf("got Content-Type %q, want application/json", req.contentType)
+	}
 
-		if req.contentType != "application/json" {
-			t.Errorf("got Content-Type %q, want application/json", req.contentType)
-		}
+	if req.contentEncoding != "gzip" {
+		t.Errorf("got Content-Encoding %q, want gzip", req.contentEncoding)
+	}
 
-		if req.contentEncoding != "gzip" {
-			t.Errorf("got Content-Encoding %q, want gzip", req.contentEncoding)
-		}
+	if req.decodeErr != nil {
+		t.Fatalf("request body is not a valid metrics list: %v", req.decodeErr)
+	}
 
-		if req.decodeErr != nil {
-			t.Errorf("request body is not a valid metric: %v", req.decodeErr)
+	want := snapshotMap(t, a.collector.Snapshot())
+	if len(req.metrics) != len(want) {
+		t.Errorf("got %d metrics in the batch, want %d", len(req.metrics), len(want))
+	}
 
-			continue
-		}
+	seen := make(map[string]bool, len(req.metrics))
 
-		m := req.metric
+	for _, m := range req.metrics {
 		seen[m.ID] = true
 
 		switch m.MType {
@@ -176,8 +172,10 @@ func TestAgentReportSendsPollCountDelta(t *testing.T) {
 	var deltas []int64
 
 	for _, req := range requests() {
-		if req.metric.ID == pollCountMetric && req.metric.Delta != nil {
-			deltas = append(deltas, *req.metric.Delta)
+		for _, m := range req.metrics {
+			if m.ID == pollCountMetric && m.Delta != nil {
+				deltas = append(deltas, *m.Delta)
+			}
 		}
 	}
 
@@ -218,33 +216,42 @@ func TestAgentReportSurvivesServerErrors(t *testing.T) {
 	a.Report(context.Background())
 
 	entries := logs.All()
-	if want := len(a.collector.Snapshot()); len(entries) != want {
-		t.Fatalf("got %d log entries, want one per failed metric (%d)", len(entries), want)
+	if len(entries) != 1 {
+		t.Fatalf("got %d log entries, want one per failed batch", len(entries))
 	}
 
-	for _, e := range entries {
-		if e.Level != zap.ErrorLevel {
-			t.Errorf("got level %s, want error", e.Level)
-		}
+	if entries[0].Level != zap.ErrorLevel {
+		t.Errorf("got level %s, want error", entries[0].Level)
+	}
 
-		if name, _ := e.ContextMap()["metric"].(string); name == "" {
-			t.Error("log entry must name the metric that was not reported")
-		}
+	if count, _ := entries[0].ContextMap()["count"].(int64); count != int64(len(a.collector.Snapshot())) {
+		t.Errorf("log entry must contain the number of unsent metrics, got %v", entries[0].ContextMap()["count"])
+	}
+}
+
+func TestSenderSkipsEmptyBatch(t *testing.T) {
+	srv, requests := newRecordingServer(t)
+
+	s := NewSender(config.SenderConfig{Address: srv.URL, ReportInterval: time.Second}, zap.NewNop())
+
+	if err := s.SendBatch(context.Background(), nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if n := len(requests()); n != 0 {
+		t.Errorf("got %d requests, empty batch must not be sent", n)
 	}
 }
 
 func TestAgentRunStopsOnContextCancel(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	srv, requests := newRecordingServer(t)
 
 	a := New(config.AgentConfig{
 		Collector: config.CollectorConfig{PollInterval: 10 * time.Millisecond},
 		Sender:    config.SenderConfig{Address: srv.URL, ReportInterval: 20 * time.Millisecond},
 	}, zap.NewNop())
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := make(chan struct{})
@@ -254,13 +261,24 @@ func TestAgentRunStopsOnContextCancel(t *testing.T) {
 		close(done)
 	}()
 
+	deadline := time.After(5 * time.Second)
+	for len(requests()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("agent did not report metrics while running")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel()
+
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Run did not stop after context cancellation")
 	}
 
-	if metric := snapshotMap(t, a.collector.Snapshot())[pollCountMetric]; metric.Delta == nil || *metric.Delta == 0 {
+	if metric := snapshotMap(t, requests()[0].metrics)[pollCountMetric]; metric.Delta == nil || *metric.Delta == 0 {
 		t.Error("agent did not poll metrics while running")
 	}
 }

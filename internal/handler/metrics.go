@@ -2,10 +2,12 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"html/template"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -41,20 +43,42 @@ var indexTemplate = template.Must(template.New("index").Parse(`<!DOCTYPE html>
 `))
 
 type MetricsService interface {
-	Update(mType, name, rawValue string) error
-	Value(mType, name string) (string, error)
-	UpdateMetric(m models.Metrics) (models.Metrics, error)
-	Metric(mType, name string) (models.Metrics, error)
-	All() []models.Metrics
+	Update(ctx context.Context, mType, name, rawValue string) error
+	Value(ctx context.Context, mType, name string) (string, error)
+	UpdateMetric(ctx context.Context, m models.Metrics) (models.Metrics, error)
+	Metric(ctx context.Context, mType, name string) (models.Metrics, error)
+	All(ctx context.Context) ([]models.Metrics, error)
+	UpdateMetrics(ctx context.Context, metrics []models.Metrics) error
 }
+
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
+
+const pingTimeout = 3 * time.Second
 
 type MetricsHandler struct {
 	metrics MetricsService
+	pinger  Pinger
 	log     *zap.Logger
 }
 
-func NewMetricsHandler(metrics MetricsService, log *zap.Logger) *MetricsHandler {
-	return &MetricsHandler{metrics: metrics, log: log}
+type Option func(*MetricsHandler)
+
+func WithPinger(p Pinger) Option {
+	return func(h *MetricsHandler) {
+		h.pinger = p
+	}
+}
+
+func NewMetricsHandler(metrics MetricsService, log *zap.Logger, opts ...Option) *MetricsHandler {
+	h := &MetricsHandler{metrics: metrics, log: log}
+
+	for _, opt := range opts {
+		opt(h)
+	}
+
+	return h
 }
 
 func (h *MetricsHandler) Router() http.Handler {
@@ -63,6 +87,8 @@ func (h *MetricsHandler) Router() http.Handler {
 	r.Use(middleware.StripSlashes)
 
 	r.Get("/", h.index)
+	r.Get("/ping", h.ping)
+	r.Post("/updates", h.updatesJSON)
 
 	r.Route("/update", func(r chi.Router) {
 		r.Post("/", h.updateJSON)
@@ -86,7 +112,7 @@ func (h *MetricsHandler) update(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	value := chi.URLParam(r, "value")
 
-	if err := h.metrics.Update(mType, name, value); err != nil {
+	if err := h.metrics.Update(r.Context(), mType, name, value); err != nil {
 		h.writeServiceError(w, err)
 
 		return
@@ -99,7 +125,7 @@ func (h *MetricsHandler) value(w http.ResponseWriter, r *http.Request) {
 	mType := chi.URLParam(r, "type")
 	name := chi.URLParam(r, "name")
 
-	value, err := h.metrics.Value(mType, name)
+	value, err := h.metrics.Value(r.Context(), mType, name)
 	if err != nil {
 		h.writeServiceError(w, err)
 
@@ -117,7 +143,7 @@ func (h *MetricsHandler) updateJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.metrics.UpdateMetric(req)
+	updated, err := h.metrics.UpdateMetric(r.Context(), req)
 	if err != nil {
 		h.writeServiceError(w, err)
 
@@ -125,6 +151,23 @@ func (h *MetricsHandler) updateJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *MetricsHandler) updatesJSON(w http.ResponseWriter, r *http.Request) {
+	var req models.MetricsList
+	if err := easyjson.UnmarshalFromReader(r.Body, &req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+
+		return
+	}
+
+	if err := h.metrics.UpdateMetrics(r.Context(), req); err != nil {
+		h.writeServiceError(w, err)
+
+		return
+	}
+
+	writePlain(w, http.StatusOK, "metrics saved")
 }
 
 func (h *MetricsHandler) valueJSON(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +178,7 @@ func (h *MetricsHandler) valueJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current, err := h.metrics.Metric(req.MType, req.ID)
+	current, err := h.metrics.Metric(r.Context(), req.MType, req.ID)
 	if err != nil {
 		h.writeServiceError(w, err)
 
@@ -145,8 +188,13 @@ func (h *MetricsHandler) valueJSON(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, current)
 }
 
-func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
-	all := h.metrics.All()
+func (h *MetricsHandler) index(w http.ResponseWriter, r *http.Request) {
+	all, err := h.metrics.All(r.Context())
+	if err != nil {
+		h.writeServiceError(w, err)
+
+		return
+	}
 
 	views := make([]metricView, 0, len(all))
 
@@ -182,11 +230,25 @@ func (h *MetricsHandler) index(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+func (h *MetricsHandler) ping(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), pingTimeout)
+	defer cancel()
+
+	if err := h.pinger.Ping(ctx); err != nil {
+		h.log.Warn("storage ping failed", zap.Error(err))
+		http.Error(w, "storage is unavailable", http.StatusInternalServerError)
+
+		return
+	}
+
+	writePlain(w, http.StatusOK, "OK")
+}
+
 func (h *MetricsHandler) writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrEmptyName), errors.Is(err, service.ErrNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
-	case errors.Is(err, service.ErrUnknownType), errors.Is(err, service.ErrInvalidValue):
+	case errors.Is(err, service.ErrUnknownType), errors.Is(err, service.ErrInvalidValue), errors.Is(err, service.ErrEmptyBatch):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		h.log.Error("internal error while handling metrics request", zap.Error(err))

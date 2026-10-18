@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -23,30 +24,38 @@ type stubService struct {
 	metric            models.Metrics
 	valueErr          error
 	all               []models.Metrics
+	allErr            error
+	batches           [][]models.Metrics
 }
 
-func (s *stubService) Update(mType, name, rawValue string) error {
+func (s *stubService) Update(_ context.Context, mType, name, rawValue string) error {
 	s.updateCalls = append(s.updateCalls, [3]string{mType, name, rawValue})
 
 	return s.updateErr
 }
 
-func (s *stubService) Value(_, _ string) (string, error) {
+func (s *stubService) Value(_ context.Context, _, _ string) (string, error) {
 	return s.value, s.valueErr
 }
 
-func (s *stubService) UpdateMetric(m models.Metrics) (models.Metrics, error) {
+func (s *stubService) UpdateMetric(_ context.Context, m models.Metrics) (models.Metrics, error) {
 	s.updateMetricCalls = append(s.updateMetricCalls, m)
 
 	return s.metric, s.updateErr
 }
 
-func (s *stubService) Metric(_, _ string) (models.Metrics, error) {
+func (s *stubService) Metric(_ context.Context, _, _ string) (models.Metrics, error) {
 	return s.metric, s.valueErr
 }
 
-func (s *stubService) All() []models.Metrics {
-	return s.all
+func (s *stubService) UpdateMetrics(_ context.Context, metrics []models.Metrics) error {
+	s.batches = append(s.batches, metrics)
+
+	return s.updateErr
+}
+
+func (s *stubService) All(_ context.Context) ([]models.Metrics, error) {
+	return s.all, s.allErr
 }
 
 func TestHandlerPassesUpdateParamsToService(t *testing.T) {
@@ -203,5 +212,111 @@ func TestHandlerDoesNotLogClientErrors(t *testing.T) {
 
 	if n := len(logs.All()); n != 0 {
 		t.Errorf("got %d log entries, want 0: client errors are logged by the request middleware", n)
+	}
+}
+
+type stubPinger struct {
+	err   error
+	calls int
+}
+
+func (p *stubPinger) Ping(_ context.Context) error {
+	p.calls++
+
+	return p.err
+}
+
+func TestPing(t *testing.T) {
+	tests := []struct {
+		name      string
+		pinger    *stubPinger
+		wantCode  int
+		wantCalls int
+	}{
+		{name: "storage is reachable", pinger: &stubPinger{}, wantCode: http.StatusOK, wantCalls: 1},
+		{name: "storage is unreachable", pinger: &stubPinger{err: errors.New("connection refused")}, wantCode: http.StatusInternalServerError, wantCalls: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := NewMetricsHandler(&stubService{}, zap.NewNop(), WithPinger(tt.pinger)).Router()
+
+			req := httptest.NewRequest(http.MethodGet, "/ping", http.NoBody)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Errorf("got status %d, want %d", rec.Code, tt.wantCode)
+			}
+
+			if tt.pinger.calls != tt.wantCalls {
+				t.Errorf("got %d Ping calls, want %d", tt.pinger.calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+func TestHandlerIndexStorageError(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	router := NewMetricsHandler(&stubService{allErr: errors.New("connection refused")}, zap.New(core)).Router()
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("got status %d, want 500", rec.Code)
+	}
+
+	if n := logs.FilterLevelExact(zap.ErrorLevel).Len(); n != 1 {
+		t.Errorf("got %d error log entries, want 1", n)
+	}
+}
+
+func TestHandlerUpdatesPassesBatchToService(t *testing.T) {
+	stub := &stubService{}
+	router := NewMetricsHandler(stub, zap.NewNop()).Router()
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/updates/",
+		strings.NewReader(`[{"id":"Alloc","type":"gauge","value":1.5},{"id":"PollCount","type":"counter","delta":2}]`)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+
+	want := [][]models.Metrics{{
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1.5)},
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(2)},
+	}}
+	if !reflect.DeepEqual(stub.batches, want) {
+		t.Errorf("got batches %+v, want %+v", stub.batches, want)
+	}
+}
+
+func TestHandlerUpdatesMapsErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		err  error
+		want int
+	}{
+		{name: "malformed JSON", body: `[{"id":"Alloc"`, want: http.StatusBadRequest},
+		{name: "object instead of list", body: `{"id":"Alloc","type":"gauge","value":1}`, want: http.StatusBadRequest},
+		{name: "empty batch", body: `[]`, err: service.ErrEmptyBatch, want: http.StatusBadRequest},
+		{name: "invalid metric", body: `[{"id":"Alloc","type":"gauge"}]`, err: service.ErrInvalidValue, want: http.StatusBadRequest},
+		{name: "storage failure", body: `[{"id":"Alloc","type":"gauge","value":1}]`, err: errors.New("db down"), want: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := NewMetricsHandler(&stubService{updateErr: tt.err}, zap.NewNop()).Router()
+
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader(tt.body)))
+
+			if rec.Code != tt.want {
+				t.Errorf("got status %d, want %d", rec.Code, tt.want)
+			}
+		})
 	}
 }

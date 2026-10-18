@@ -34,17 +34,21 @@ func TestPersistentStorageSyncMode(t *testing.T) {
 	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
 	p := NewPersistentStorage(NewMemStorage(), file, true, zap.NewNop())
 
-	p.SetGauge("Alloc", 12.5)
+	if err := p.SetGauge(t.Context(), "Alloc", 12.5); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if got := loadMap(t, file)["Alloc"]; got.Value == nil || *got.Value != 12.5 {
 		t.Fatalf("gauge was not saved synchronously: %+v", got)
 	}
 
-	if total := p.AddCounter("PollCount", 3); total != 3 {
-		t.Errorf("got total %d, want 3", total)
+	if total, err := p.AddCounter(t.Context(), "PollCount", 3); err != nil || total != 3 {
+		t.Errorf("got (%d, %v), want (3, nil)", total, err)
 	}
 
-	p.AddCounter("PollCount", 4)
+	if _, err := p.AddCounter(t.Context(), "PollCount", 4); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if got := loadMap(t, file)["PollCount"]; got.Delta == nil || *got.Delta != 7 {
 		t.Errorf("counter was not saved synchronously: %+v", got)
@@ -62,8 +66,8 @@ func TestPersistentStorageSyncModeConcurrentUpdates(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			p.SetGauge(fmt.Sprintf("g%d", i), float64(i))
-			p.AddCounter("total", 1)
+			_ = p.SetGauge(context.Background(), fmt.Sprintf("g%d", i), float64(i))
+			_, _ = p.AddCounter(context.Background(), "total", 1)
 		}()
 	}
 
@@ -83,7 +87,9 @@ func TestPersistentStoragePeriodicMode(t *testing.T) {
 	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
 	p := NewPersistentStorage(NewMemStorage(), file, false, zap.NewNop())
 
-	p.SetGauge("Alloc", 1)
+	if err := p.SetGauge(t.Context(), "Alloc", 1); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if saved := loadMap(t, file); len(saved) != 0 {
 		t.Fatalf("periodic mode must not save on update, got %+v", saved)
@@ -120,14 +126,47 @@ func TestPersistentStorageLogsSaveErrors(t *testing.T) {
 	file := NewFileStore(filepath.Join(t.TempDir(), "no-such-dir", "metrics.json"))
 	p := NewPersistentStorage(NewMemStorage(), file, true, zap.New(core))
 
-	p.SetGauge("Alloc", 1)
+	if err := p.SetGauge(t.Context(), "Alloc", 1); err != nil {
+		t.Fatalf("a failed file save must not fail the update: %v", err)
+	}
 
-	if v, ok := p.Gauge("Alloc"); !ok || v != 1 {
+	if v, ok, _ := p.Gauge(t.Context(), "Alloc"); !ok || v != 1 {
 		t.Errorf("value must stay in memory even if saving fails, got (%v, %v)", v, ok)
 	}
 
 	entries := logs.All()
 	if len(entries) != 1 || entries[0].Level != zap.ErrorLevel {
 		t.Fatalf("got log entries %+v, want one error", entries)
+	}
+}
+
+func TestPersistentStorageSyncModeSavesBatch(t *testing.T) {
+	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
+	p := NewPersistentStorage(NewMemStorage(), file, true, zap.NewNop())
+
+	err := p.UpdateMetrics(t.Context(), []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: ptrFloat(1.5)},
+		{ID: "PollCount", MType: models.Counter, Delta: ptrInt(3)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	saved := loadMap(t, file)
+	if got := saved["Alloc"]; got.Value == nil || *got.Value != 1.5 {
+		t.Errorf("gauge was not saved: %+v", got)
+	}
+
+	if got := saved["PollCount"]; got.Delta == nil || *got.Delta != 3 {
+		t.Errorf("counter was not saved: %+v", got)
+	}
+}
+
+func TestPersistentStoragePingIsAlwaysHealthy(t *testing.T) {
+	file := NewFileStore(filepath.Join(t.TempDir(), "metrics.json"))
+	p := NewPersistentStorage(NewMemStorage(), file, true, zap.NewNop())
+
+	if err := p.Ping(t.Context()); err != nil {
+		t.Errorf("file-backed storage is always available, got %v", err)
 	}
 }
